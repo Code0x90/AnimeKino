@@ -13,6 +13,16 @@ function log(stage, ...details) {
   console.info(`[AnimeAV1][${stage}]`, ...details);
 }
 
+function imageDebug(value) {
+  if (!isPublicImage(value)) return "none";
+  try {
+    const url = new URL(value);
+    return (url.hostname + url.pathname).slice(0, 140);
+  } catch {
+    return "invalid";
+  }
+}
+
 function cleanText(value) {
   return String(value || "")
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
@@ -90,13 +100,15 @@ async function getAniListMedia(malIds) {
       const malId = Number(media.idMal);
       if (!ids.includes(malId)) continue;
       const cover = media.coverImage || {};
+      const posterQuality = isPublicImage(cover.extraLarge) ? "extraLarge" : isPublicImage(cover.large) ? "large" : "none";
       out.set(malId, {
         anilistId: Number(media.id) || undefined,
         poster: [cover.extraLarge, cover.large].find(isPublicImage),
+        posterQuality,
         backdrop: isPublicImage(media.bannerImage) ? media.bannerImage : undefined,
       });
     }
-    log("anilist", `requested=${ids.length}`, `matched=${out.size}`, `withPoster=${[...out.values()].filter((item) => item.poster).length}`);
+    log("anilist", `requested=${ids.length}`, `matched=${out.size}`, `withPoster=${[...out.values()].filter((item) => item.poster).length}`, `withBanner=${[...out.values()].filter((item) => item.backdrop).length}`);
     return out;
   } catch (error) {
     log("anilist", `failed requested=${ids.length}`, String(error && error.message || error).slice(0, 180));
@@ -106,11 +118,20 @@ async function getAniListMedia(malIds) {
 
 async function catalogDetail(item) {
   const existing = catalogDetailCache.get(item.ref);
-  if (existing && Date.now() - existing.at < 24 * 60 * 60 * 1000) return existing.value;
+  if (existing && Date.now() - existing.at < 24 * 60 * 60 * 1000) {
+    const detail = await existing.value;
+    log("catalog-detail", `slug=${item.ref}`, `cache=hit`, `malId=${detail.malId || "none"}`, `siteImage=${imageDebug(detail.poster)}`);
+    return detail;
+  }
   const value = getPage("/media/" + encodeURIComponent(item.ref), 4000)
-    .then((html) => ({ malId: animeMeta(html, item.ref).malId, poster: posterFrom(html) }))
-    .catch(() => {
+    .then((html) => {
+      const detail = { malId: animeMeta(html, item.ref).malId, poster: posterFrom(html) };
+      log("catalog-detail", `slug=${item.ref}`, `cache=miss`, `malId=${detail.malId || "none"}`, `siteImage=${imageDebug(detail.poster)}`);
+      return detail;
+    })
+    .catch((error) => {
       catalogDetailCache.delete(item.ref);
+      log("catalog-detail", `slug=${item.ref}`, `failed=${String(error && error.message || error).slice(0, 120)}`);
       return {};
     });
   catalogDetailCache.set(item.ref, { at: Date.now(), value });
@@ -118,7 +139,8 @@ async function catalogDetail(item) {
   return value;
 }
 
-async function enrichCatalogArtwork(items) {
+async function enrichCatalogArtwork(items, surface) {
+  log("catalog", `surface=${surface}`, `items=${items.length}`);
   const detailData = new Map();
   let next = 0;
   await Promise.all(Array.from({ length: Math.min(10, items.length) }, async () => {
@@ -132,14 +154,18 @@ async function enrichCatalogArtwork(items) {
   const result = items.map((item) => {
     const { _malId, ...visibleItem } = item;
     const detail = detailData.get(item.ref) || {};
-    const anilist = media.get(_malId || detail.malId);
-    return { ...visibleItem, poster: (anilist && anilist.poster) || visibleItem.poster || detail.poster };
+    const malId = _malId || detail.malId;
+    const anilist = media.get(malId);
+    const poster = (anilist && anilist.poster) || visibleItem.poster || detail.poster;
+    const posterSource = anilist?.poster ? `AniList/${anilist.posterQuality}` : visibleItem.poster ? "AnimeAV1-card" : detail.poster ? "AnimeAV1-detail" : "none";
+    log("catalog-item", `surface=${surface}`, `title=${String(item.title || "?").slice(0, 52)}`, `slug=${item.ref}`, `malId=${malId || "none"}`, `AniList=${anilist ? "match" : "miss"}`, `poster=${posterSource}`, `image=${imageDebug(poster)}`);
+    return { ...visibleItem, poster };
   });
-  log("catalog-art", `items=${items.length}`, `AniListPosters=${result.filter((item, index) => {
+  log("catalog-summary", `surface=${surface}`, `AniListPosters=${result.filter((item, index) => {
     const source = items[index];
     const malId = source._malId || (detailData.get(item.ref) || {}).malId;
     return !!media.get(malId)?.poster;
-  }).length}`, `withoutPoster=${result.filter((item) => !item.poster).length}`);
+  }).length}`, `withImage=${result.filter((item) => !!item.poster).length}`, `withoutImage=${result.filter((item) => !item.poster).length}`);
   return result;
 }
 
@@ -418,13 +444,13 @@ export async function search(query) {
   if (!page) return [];
   const path = "/catalogo?search=" + encodeURIComponent(q) + "&page=" + page;
   const html = await getPage(path);
-  const items = await enrichCatalogArtwork(parseCards(html));
+  const items = await enrichCatalogArtwork(parseCards(html), "search");
   return { items, next: nextPage(items, page) };
 }
 
 export async function home() {
   const html = await getPage("/catalogo");
-  const items = await enrichCatalogArtwork(parseCards(html));
+  const items = await enrichCatalogArtwork(parseCards(html), "home");
   if (!items.length) return [];
   return [{ id: "anime-recientes", title: "Animes recientes", genre: "anime", ref: "catalogo", items }];
 }
@@ -435,7 +461,7 @@ export async function browse(ref, cursor) {
   const page = validPage(cursor);
   if (!page) throw kino.error("not_found", "No existe esa página");
   const html = await getPage("/catalogo?page=" + page);
-  const items = await enrichCatalogArtwork(parseCards(html));
+  const items = await enrichCatalogArtwork(parseCards(html), `browse:${page}`);
   return { items, next: nextPage(items, page) };
 }
 
@@ -445,17 +471,20 @@ export async function episodes(ref) {
   const html = await getPage("/media/" + encodeURIComponent(slug));
   const data = episodeList(html, slug);
   if (!data.episodes.length) throw kino.error("not_found", "No se encontraron episodios");
-  log("episodes", `slug=${slug}`, `malId=${data.meta.malId || "none"}`, `animeAv1Episodes=${data.episodes.length}`);
+  log("series-open", `slug=${slug}`, `title=${titleFrom(html, slug).slice(0, 80)}`, `year=${data.meta.year || "none"}`, `malId=${data.meta.malId || "none"}`, `episodes=${data.episodes.length}`);
   const animeImages = (await getAniListMedia([data.meta.malId])).get(data.meta.malId);
   const ids = {};
   if (Number.isInteger(data.meta.malId) && data.meta.malId > 0) ids.mal = data.meta.malId;
   if (Number.isInteger(animeImages && animeImages.anilistId) && animeImages.anilistId > 0) ids.anilist = animeImages.anilistId;
   const poster = animeImages?.poster || posterFrom(html);
   const backdrop = animeImages?.backdrop || backdropFrom(html);
-  log("series-art", `slug=${slug}`, `poster=${animeImages?.poster ? "AniList" : poster ? "AnimeAV1" : "none"}`, `backdrop=${animeImages?.backdrop ? "AniList" : backdrop ? "AnimeAV1" : "none"}`);
+  log("series-art", `slug=${slug}`, `malId=${data.meta.malId || "none"}`, `AniList=${animeImages ? "match" : "miss"}`, `poster=${animeImages?.poster ? `AniList/${animeImages.posterQuality}` : poster ? "AnimeAV1" : "none"}`, `posterImage=${imageDebug(poster)}`, `backdrop=${animeImages?.backdrop ? "AniList/banner" : backdrop ? "AnimeAV1" : "none"}`, `backdropImage=${imageDebug(backdrop)}`);
   log("series-ids", `slug=${slug}`, `mal=${ids.mal || "none"}`, `anilist=${ids.anilist || "none"}`);
   const title = titleFrom(html, slug.replace(/-/g, " "));
   const synopsis = /<p\b[^>]*>([\s\S]*?)<\/p>/i.exec(html);
+  const firstEpisode = data.episodes[0];
+  const lastEpisode = data.episodes[data.episodes.length - 1];
+  log("chapter-list", `slug=${slug}`, `count=${data.episodes.length}`, `seasonCount=${new Set(data.episodes.map((episode) => episode.season)).size}`, `range=${firstEpisode.season}x${firstEpisode.number}-${lastEpisode.season}x${lastEpisode.number}`, "pluginFields=season,number,ref", "pluginChapterMetadata=none");
   return {
     series: {
       title,
