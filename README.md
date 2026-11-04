@@ -10,8 +10,8 @@ Plugin comunitario para buscar anime en [AnimeAV1](https://animeav1.com), mostra
 - Resolución de PlayerZilla: convierte el enlace `/play/<id>` al manifiesto `/m3u8/<id>` y envía los encabezados del reproductor.
 - Resolución de Voe: sigue la redirección JavaScript del embed, decodifica su payload y devuelve el HLS con el `Referer` de Voe.
 - El reproductor distingue las fuentes por servidor e idioma: PlayerZilla · Japonés, PlayerZilla · Latino, Voe · Japonés y Voe · Latino, según lo que ofrezca cada episodio. Si una fuente falla, Kino puede probar la alternativa disponible.
-- Las portadas externas de AniList por MAL ID y las imágenes de Kitsu están desactivadas para comparar la presentación. El catálogo y la ficha conservan las imágenes que entrega AnimeAV1; Kitsu mantiene solo los nombres, fechas y duración de los episodios.
-- Los registros de diagnóstico indican si Kino recibió una imagen de AnimeAV1, si faltó, cuántos episodios encontró Kitsu y qué fuente de video se seleccionó. En Kino se consultan en el registro del plugin (activa el modo debug si hace falta); en el SDK aparecen en la salida de `node sdk/run.mjs`.
+- El plugin no envía imágenes del catálogo, las series ni los episodios. Kitsu mantiene solo los nombres, fechas y duración de los episodios; Kino muestra su presentación predeterminada.
+- Los registros de diagnóstico indican si AnimeAV1 ofrece un fondo panorámico, cuántos episodios encontró Kitsu y qué fuente de video se seleccionó. En Kino se consultan en el registro del plugin (activa el modo debug si hace falta); en el SDK aparecen en la salida de `node sdk/run.mjs`.
 
 No requiere cuenta ni configuración. Esta versión no declara descargas sin conexión ni un resolutor externo. Excluye los títulos que identifica como contenido adulto para no mostrarlos sin el control +18 de Kino.
 

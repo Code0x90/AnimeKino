@@ -44,7 +44,6 @@ function animeMeta(html, slug) {
   const starts = [...before.matchAll(/id:\d+,title:"/g)];
   const start = starts.length ? starts[starts.length - 1].index : Math.max(0, at - 5000);
   const record = html.slice(start, Math.min(html.length, at + 1600));
-  const afterSlug = html.slice(at, Math.min(html.length, at + 1400));
   const date = /startDate:"(\d{4})/.exec(record);
   const score = /score:([\d.]+)/.exec(record);
   const mature = /mature:true/.test(record);
@@ -52,7 +51,6 @@ function animeMeta(html, slug) {
   const genres = genreMatches.length
     ? [...genreMatches[genreMatches.length - 1][1].matchAll(/slug:"([^"]+)"/g)].map((m) => m[1]).slice(0, 5)
     : [];
-  const seasonMatch = /seasons:(null|\[[^\]]*\])/.exec(afterSlug);
   const malId = /^,malId:(\d+)/.exec(html.slice(at + marker.length));
 
   return {
@@ -61,7 +59,6 @@ function animeMeta(html, slug) {
     mature,
     genres,
     malId: malId ? Number(malId[1]) : undefined,
-    seasonValue: seasonMatch ? seasonMatch[1] : "null",
   };
 }
 
@@ -116,46 +113,13 @@ async function getKitsuEpisodes(malId) {
       });
       byNumber.set(number, candidates);
     }
-    log("kitsu", `malId=${malId}`, `episodeNumbers=${byNumber.size}`, "artwork=disabled");
+    log("kitsu", `malId=${malId}`, `episodeNumbers=${byNumber.size}`);
     return { episodes: byNumber };
   } catch (error) {
     // Metadata is optional: a Kitsu outage or an unmapped MAL id must not hide episodes.
     log("kitsu", `failed malId=${malId}`, String(error && error.message || error).slice(0, 180));
     return { episodes: new Map() };
   }
-}
-
-async function enrichCatalogPosters(items) {
-  const detailData = new Map();
-  const missing = items.filter((item) => !item.poster);
-  log("catalog-art", `items=${items.length}`, `sitePosters=${items.filter((item) => !!item.poster).length}`, `needAnimeAV1DetailLookup=${missing.length}`, "AniList=disabled");
-  let next = 0;
-  await Promise.all(Array.from({ length: Math.min(5, missing.length) }, async () => {
-    while (next < missing.length) {
-      const item = missing[next++];
-      try {
-        const html = await getPage("/media/" + encodeURIComponent(item.ref));
-        detailData.set(item.ref, {
-          poster: posterFrom(html),
-        });
-      } catch { /* Keep the catalog entry even if its detail page has no artwork. */ }
-    }
-  }));
-  const enriched = items.map((item) => {
-    const { _malId, ...visibleItem } = item;
-    const detail = detailData.get(item.ref) || {};
-    return { ...visibleItem, poster: visibleItem.poster || detail.poster };
-  });
-  for (let index = 0; index < enriched.length; index++) {
-    const item = enriched[index];
-    const source = items[index];
-    const detail = detailData.get(item.ref) || {};
-    if (!item.poster || !source.poster) {
-      log("catalog-item", `title=${String(item.title || "?").slice(0, 60)}`, `slug=${item.ref}`, `poster=${item.poster ? "AnimeAV1 detail" : "none"}`);
-    }
-  }
-  log("catalog-art", `finalPosters=${enriched.filter((item) => !!item.poster).length}`, `withoutPoster=${enriched.filter((item) => !item.poster).length}`, "AniList=disabled");
-  return enriched;
 }
 
 function enrichEpisodes(episodes, metadata) {
@@ -189,23 +153,8 @@ function parseCard(article, pageHtml) {
   if (!link) return null;
   const slug = link[1];
   const heading = /<h[23]\b[^>]*>([\s\S]*?)<\/h[23]>/i.exec(article);
-  const posterMatch = /<img\b[^>]*alt="(?:Portada|Póster) de ([^"]+)"[^>]*>/i.exec(article);
-  const images = [...article.matchAll(/<img\b[^>]*>/gi)];
-  let poster = "";
-  for (const image of images) {
-    const tag = image[0];
-    if (/alt="(?:Portada|Póster) de /i.test(tag)) {
-      poster = attr(tag, "src") || attr(tag, "data-src") || attr(tag, "data-lazy-src");
-      if (!poster) {
-        const srcset = attr(tag, "srcset");
-        const choices = srcset ? srcset.split(",").map((part) => part.trim().split(/\s+/)[0]).filter(Boolean) : [];
-        poster = choices.length ? choices[choices.length - 1] : "";
-      }
-      break;
-    }
-  }
   const synopsis = /<p\b[^>]*>([\s\S]*?)<\/p>/i.exec(article);
-  const title = cleanText(heading ? heading[1] : (posterMatch ? posterMatch[1] : slug.replace(/-/g, " ")));
+  const title = cleanText(heading ? heading[1] : slug.replace(/-/g, " "));
   if (!title) return null;
 
   const meta = animeMeta(pageHtml, slug);
@@ -219,8 +168,6 @@ function parseCard(article, pageHtml) {
     title: title.slice(0, 200),
     kind: "series",
     lang: "es",
-    poster: poster || undefined,
-    _malId: meta.malId,
     overview: synopsis ? cleanText(synopsis[1]).slice(0, 2000) : undefined,
     year: meta.year,
     rating: meta.rating,
@@ -271,12 +218,12 @@ function episodeList(html, slug) {
   const end = html.indexOf("]", listAt);
   if (end < 0) return { meta, episodes: [] };
   const raw = html.slice(listAt, end + 1);
-  const matches = [...raw.matchAll(/\{id:(\d+),number:(\d+)(?:,season:(\d+))?\}/g)];
+  const matches = [...raw.matchAll(/\{id:\d+,number:(\d+)(?:,season:(\d+))?\}/g)];
   const seen = new Set();
   const episodes = [];
   for (const match of matches) {
-    const number = Number(match[2]);
-    const season = Number(match[3] || 1);
+    const number = Number(match[1]);
+    const season = Number(match[2] || 1);
     if (number < 1 || season < 1 || number > 99999 || season > 999) continue;
     const key = season + ":" + number;
     if (seen.has(key)) continue;
@@ -289,14 +236,6 @@ function episodeList(html, slug) {
 function titleFrom(html, fallback) {
   const heading = /<h1\b[^>]*>([\s\S]*?)<\/h1>/i.exec(html);
   return heading ? cleanText(heading[1]).slice(0, 200) : fallback;
-}
-
-function posterFrom(html) {
-  const images = [...html.matchAll(/<img\b[^>]*>/gi)];
-  for (const image of images) {
-    if (/alt="(?:Portada|Póster) de /i.test(image[0])) return attr(image[0], "src") || undefined;
-  }
-  return undefined;
 }
 
 function backdropFrom(html) {
@@ -456,13 +395,13 @@ export async function search(query) {
   if (!page) return [];
   const path = "/catalogo?search=" + encodeURIComponent(q) + "&page=" + page;
   const html = await getPage(path);
-  const items = await enrichCatalogPosters(parseCards(html));
+  const items = parseCards(html);
   return { items, next: nextPage(items, page) };
 }
 
 export async function home() {
   const html = await getPage("/catalogo");
-  const items = await enrichCatalogPosters(parseCards(html));
+  const items = parseCards(html);
   if (!items.length) return [];
   return [{ id: "anime-recientes", title: "Animes recientes", genre: "anime", ref: "catalogo", items }];
 }
@@ -473,7 +412,7 @@ export async function browse(ref, cursor) {
   const page = validPage(cursor);
   if (!page) throw kino.error("not_found", "No existe esa página");
   const html = await getPage("/catalogo?page=" + page);
-  const items = await enrichCatalogPosters(parseCards(html));
+  const items = parseCards(html);
   return { items, next: nextPage(items, page) };
 }
 
@@ -485,19 +424,16 @@ export async function episodes(ref) {
   if (!data.episodes.length) throw kino.error("not_found", "No se encontraron episodios");
   log("episodes", `slug=${slug}`, `malId=${data.meta.malId || "none"}`, `animeAv1Episodes=${data.episodes.length}`);
   const kitsu = await getKitsuEpisodes(data.meta.malId);
-  const sitePoster = posterFrom(html);
   const siteBackdrop = backdropFrom(html);
-  const poster = sitePoster;
   const backdrop = siteBackdrop;
   const enrichedEpisodes = enrichEpisodes(data.episodes, kitsu.episodes);
-  log("series-art", `slug=${slug}`, `poster=${poster ? "AnimeAV1" : "none"}`, `backdrop=${backdrop ? "AnimeAV1" : "none"}`, "externalArtwork=disabled");
-  log("episode-metadata", `slug=${slug}`, `KitsuNumbers=${kitsu.episodes.size}`, `episodesWithKitsuData=${enrichedEpisodes.filter((episode) => (kitsu.episodes.get(episode.number) || []).length > 0).length}`, "KitsuStills=disabled");
+  log("series-image", `slug=${slug}`, `backdrop=${backdrop ? "AnimeAV1" : "none"}`);
+  log("episode-metadata", `slug=${slug}`, `KitsuNumbers=${kitsu.episodes.size}`, `episodesWithKitsuData=${enrichedEpisodes.filter((episode) => (kitsu.episodes.get(episode.number) || []).length > 0).length}`);
   const title = titleFrom(html, slug.replace(/-/g, " "));
   const synopsis = /<p\b[^>]*>([\s\S]*?)<\/p>/i.exec(html);
   return {
     series: {
       title,
-      poster,
       backdrop,
       overview: synopsis ? cleanText(synopsis[1]).slice(0, 2000) : undefined,
       year: data.meta.year,
