@@ -9,6 +9,15 @@ const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
 const PAGE_SIZE = 20;
 const MAX_CATALOG_PAGE = 50;
 
+function log(stage, ...details) {
+  console.info(`[AnimeAV1][${stage}]`, ...details);
+}
+
+function imageSource(value, sources) {
+  if (!value) return "none";
+  return sources.find(([, url]) => url === value)?.[0] || "other";
+}
+
 function cleanText(value) {
   return String(value || "")
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
@@ -63,21 +72,33 @@ function animeMeta(html, slug) {
 }
 
 async function getKitsuEpisodes(malId) {
-  if (!Number.isInteger(malId) || malId < 1) return { episodes: new Map() };
+  if (!Number.isInteger(malId) || malId < 1) {
+    log("kitsu", "skip: no MAL id");
+    return { episodes: new Map() };
+  }
   try {
     const mappingUrl = KITSU + "/mappings?filter%5BexternalSite%5D=myanimelist%2Fanime&filter%5BexternalId%5D=" + malId + "&include=item";
     const mappingResponse = await kino.fetch(mappingUrl, {
       headers: { Accept: "application/vnd.api+json" }, timeoutMs: 15000,
     });
-    if (!mappingResponse.ok) return { episodes: new Map() };
+    if (!mappingResponse.ok) {
+      log("kitsu", `mapping HTTP ${mappingResponse.status}`, `malId=${malId}`);
+      return { episodes: new Map() };
+    }
     const mapping = mappingResponse.json();
     const animeId = (mapping.included || []).find((item) => item && item.type === "anime")?.id;
-    if (!animeId || !/^\d+$/.test(String(animeId))) return { episodes: new Map() };
+    if (!animeId || !/^\d+$/.test(String(animeId))) {
+      log("kitsu", `no mapping found`, `malId=${malId}`);
+      return { episodes: new Map() };
+    }
 
     const animeResponse = await kino.fetch(KITSU + "/anime/" + animeId + "?include=episodes", {
       headers: { Accept: "application/vnd.api+json" }, timeoutMs: 20000,
     });
-    if (!animeResponse.ok) return { episodes: new Map() };
+    if (!animeResponse.ok) {
+      log("kitsu", `episodes HTTP ${animeResponse.status}`, `malId=${malId}`);
+      return { episodes: new Map() };
+    }
     const anime = animeResponse.json();
     const byNumber = new Map();
     const images = anime.data && anime.data.attributes || {};
@@ -107,13 +128,15 @@ async function getKitsuEpisodes(malId) {
       });
       byNumber.set(number, candidates);
     }
+    log("kitsu", `malId=${malId}`, `episodeNumbers=${byNumber.size}`, `poster=${!![posterImage.original, posterImage.large, posterImage.medium].find(isPublicImage)}`, `backdrop=${!![coverImage.original, coverImage.large].find(isPublicImage)}`);
     return {
       episodes: byNumber,
       poster: [posterImage.original, posterImage.large, posterImage.medium].find(isPublicImage),
       backdrop: [coverImage.original, coverImage.large].find(isPublicImage),
     };
-  } catch {
+  } catch (error) {
     // Metadata is optional: a Kitsu outage or an unmapped MAL id must not hide episodes.
+    log("kitsu", `failed malId=${malId}`, String(error && error.message || error).slice(0, 180));
     return { episodes: new Map() };
   }
 }
@@ -124,7 +147,10 @@ function isPublicImage(value) {
 
 async function getAniListMedia(malIds) {
   const ids = [...new Set((malIds || []).map(Number).filter((id) => Number.isInteger(id) && id > 0))].slice(0, 50);
-  if (!ids.length) return new Map();
+  if (!ids.length) {
+    log("anilist", "skip: no MAL ids");
+    return new Map();
+  }
   try {
     const response = await kino.fetch(ANILIST, {
       method: "POST",
@@ -135,7 +161,10 @@ async function getAniListMedia(malIds) {
       } },
       timeoutMs: 15000,
     });
-    if (!response.ok) return new Map();
+    if (!response.ok) {
+      log("anilist", `HTTP ${response.status}`, `requested=${ids.length}`);
+      return new Map();
+    }
     const json = response.json();
     const out = new Map();
     for (const media of json && json.data && json.data.Page && json.data.Page.media || []) {
@@ -147,8 +176,10 @@ async function getAniListMedia(malIds) {
         backdrop: isPublicImage(media.bannerImage) ? media.bannerImage : undefined,
       });
     }
+    log("anilist", `requested=${ids.length}`, `matched=${out.size}`, `withPoster=${[...out.values()].filter((item) => item.poster).length}`, `withBanner=${[...out.values()].filter((item) => item.backdrop).length}`);
     return out;
-  } catch {
+  } catch (error) {
+    log("anilist", `failed requested=${ids.length}`, String(error && error.message || error).slice(0, 180));
     return new Map();
   }
 }
@@ -156,6 +187,7 @@ async function getAniListMedia(malIds) {
 async function enrichCatalogPosters(items) {
   const detailData = new Map();
   const missing = items.filter((item) => !item.poster && !item._malId);
+  log("catalog-art", `items=${items.length}`, `sitePosters=${items.filter((item) => !!item.poster).length}`, `needDetailLookup=${missing.length}`);
   let next = 0;
   await Promise.all(Array.from({ length: Math.min(5, missing.length) }, async () => {
     while (next < missing.length) {
@@ -170,12 +202,30 @@ async function enrichCatalogPosters(items) {
     }
   }));
   const media = await getAniListMedia(items.map((item) => item._malId || (detailData.get(item.ref) || {}).malId));
-  return items.map((item) => {
+  const enriched = items.map((item) => {
     const { _malId, ...visibleItem } = item;
     const detail = detailData.get(item.ref) || {};
     const cover = media.get(_malId || detail.malId);
     return { ...visibleItem, poster: (cover && cover.poster) || visibleItem.poster || detail.poster };
   });
+  const anilistPosters = enriched.filter((item, index) => {
+    const source = items[index];
+    const malId = source._malId || (detailData.get(item.ref) || {}).malId;
+    return !!media.get(malId)?.poster;
+  }).length;
+  for (let index = 0; index < enriched.length; index++) {
+    const item = enriched[index];
+    const source = items[index];
+    const detail = detailData.get(item.ref) || {};
+    const malId = source._malId || detail.malId;
+    const aniPoster = media.get(malId)?.poster;
+    const chosen = imageSource(item.poster, [["AniList", aniPoster], ["AnimeAV1 card", source.poster], ["AnimeAV1 detail", detail.poster]]);
+    if (!item.poster || !source.poster) {
+      log("catalog-item", `title=${String(item.title || "?").slice(0, 60)}`, `slug=${item.ref}`, `malId=${malId || "none"}`, `poster=${chosen}`);
+    }
+  }
+  log("catalog-art", `AniListPosters=${anilistPosters}`, `finalPosters=${enriched.filter((item) => !!item.poster).length}`, `withoutPoster=${enriched.filter((item) => !item.poster).length}`);
+  return enriched;
 }
 
 function enrichEpisodes(episodes, metadata) {
@@ -504,24 +554,33 @@ export async function episodes(ref) {
   const html = await getPage("/media/" + encodeURIComponent(slug));
   const data = episodeList(html, slug);
   if (!data.episodes.length) throw kino.error("not_found", "No se encontraron episodios");
+  log("episodes", `slug=${slug}`, `malId=${data.meta.malId || "none"}`, `animeAv1Episodes=${data.episodes.length}`);
   const [kitsu, anilist] = await Promise.all([
     getKitsuEpisodes(data.meta.malId),
     getAniListMedia([data.meta.malId]),
   ]);
   const animeImages = anilist.get(data.meta.malId);
+  const sitePoster = posterFrom(html);
+  const siteBackdrop = backdropFrom(html);
+  const poster = (animeImages && animeImages.poster) || kitsu.poster || sitePoster;
+  const backdrop = (animeImages && animeImages.backdrop) || kitsu.backdrop || siteBackdrop;
+  const enrichedEpisodes = enrichEpisodes(data.episodes, kitsu.episodes);
+  log("series-art", `slug=${slug}`, `poster=${imageSource(poster, [["AniList", animeImages && animeImages.poster], ["Kitsu", kitsu.poster], ["AnimeAV1", sitePoster]])}`, `backdrop=${imageSource(backdrop, [["AniList", animeImages && animeImages.backdrop], ["Kitsu", kitsu.backdrop], ["AnimeAV1", siteBackdrop]])}`);
+  log("episode-metadata", `slug=${slug}`, `KitsuNumbers=${kitsu.episodes.size}`, `episodesWithKitsuData=${enrichedEpisodes.filter((episode) => (kitsu.episodes.get(episode.number) || []).length > 0).length}`, `episodesWithStills=${enrichedEpisodes.filter((episode) => !!episode.still).length}`);
   const title = titleFrom(html, slug.replace(/-/g, " "));
   const synopsis = /<p\b[^>]*>([\s\S]*?)<\/p>/i.exec(html);
   return {
     series: {
       title,
-      poster: (animeImages && animeImages.poster) || kitsu.poster || posterFrom(html),
-      backdrop: (animeImages && animeImages.backdrop) || kitsu.backdrop || backdropFrom(html),
+      poster,
+      backdrop,
+      ids: data.meta.malId ? { mal: data.meta.malId } : undefined,
       overview: synopsis ? cleanText(synopsis[1]).slice(0, 2000) : undefined,
       year: data.meta.year,
       rating: data.meta.rating,
       genres: data.meta.genres.length ? data.meta.genres : ["anime"],
     },
-    episodes: enrichEpisodes(data.episodes, kitsu.episodes),
+    episodes: enrichedEpisodes,
   };
 }
 
@@ -535,15 +594,21 @@ export async function resolve(ref) {
     throw kino.error("not_found", "No se encontró ese episodio");
   }
   const servers = await episodeServers(slug, number);
+  log("resolve", `slug=${slug}`, `episode=${number}`, `foundSources=${servers.map((server) => `${server.name}/${server.lang}`).join(",") || "none"}`);
   const resolved = [];
   for (const server of servers) {
     try {
       const stream = server.name === "PlayerZilla" ? playerZillaStream(server.url) : await voeStream(server.url);
       if (stream && !resolved.some((item) => item.url === stream.url)) {
         resolved.push({ ...stream, label: server.name + " · " + server.lang });
+      } else {
+        log("resolve", `source unavailable ${server.name}/${server.lang}`);
       }
-    } catch { /* A failed source does not prevent trying the other supported source. */ }
+    } catch (error) {
+      log("resolve", `source failed ${server.name}/${server.lang}`, String(error && error.message || error).slice(0, 180));
+    }
   }
   if (!resolved.length) throw kino.error("unavailable", "No se pudo resolver Voe ni PlayerZilla para este episodio");
+  log("resolve", `resolved=${resolved.map((item) => item.label).join(",")}`, `selected=${resolved[0].label}`, `alternatives=${Math.max(0, resolved.length - 1)}`);
   return { ...resolved[0], alternatives: resolved.slice(1) };
 }
