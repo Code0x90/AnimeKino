@@ -114,7 +114,7 @@ async function getKitsuEpisodes(malId) {
       byNumber.set(number, candidates);
     }
     log("kitsu", `malId=${malId}`, `episodeNumbers=${byNumber.size}`);
-    return { episodes: byNumber };
+    return { episodes: byNumber, kitsuId: Number(animeId) };
   } catch (error) {
     // Metadata is optional: a Kitsu outage or an unmapped MAL id must not hide episodes.
     log("kitsu", `failed malId=${malId}`, String(error && error.message || error).slice(0, 180));
@@ -424,10 +424,14 @@ export async function episodes(ref) {
   if (!data.episodes.length) throw kino.error("not_found", "No se encontraron episodios");
   log("episodes", `slug=${slug}`, `malId=${data.meta.malId || "none"}`, `animeAv1Episodes=${data.episodes.length}`);
   const kitsu = await getKitsuEpisodes(data.meta.malId);
+  const ids = {};
+  if (Number.isInteger(data.meta.malId) && data.meta.malId > 0) ids.mal = data.meta.malId;
+  if (Number.isInteger(kitsu.kitsuId) && kitsu.kitsuId > 0) ids.kitsu = kitsu.kitsuId;
   const siteBackdrop = backdropFrom(html);
   const backdrop = siteBackdrop;
   const enrichedEpisodes = enrichEpisodes(data.episodes, kitsu.episodes);
   log("series-image", `slug=${slug}`, `backdrop=${backdrop ? "AnimeAV1" : "none"}`);
+  log("series-ids", `slug=${slug}`, `mal=${ids.mal || "none"}`, `kitsu=${ids.kitsu || "none"}`);
   log("episode-metadata", `slug=${slug}`, `KitsuNumbers=${kitsu.episodes.size}`, `episodesWithKitsuData=${enrichedEpisodes.filter((episode) => (kitsu.episodes.get(episode.number) || []).length > 0).length}`);
   const title = titleFrom(html, slug.replace(/-/g, " "));
   const synopsis = /<p\b[^>]*>([\s\S]*?)<\/p>/i.exec(html);
@@ -439,6 +443,7 @@ export async function episodes(ref) {
       year: data.meta.year,
       rating: data.meta.rating,
       genres: data.meta.genres.length ? data.meta.genres : ["anime"],
+      ids: Object.keys(ids).length ? ids : undefined,
     },
     episodes: enrichedEpisodes,
   };
