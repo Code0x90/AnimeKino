@@ -7,6 +7,7 @@ const ANILIST = "https://graphql.anilist.co";
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 const PAGE_SIZE = 20;
 const MAX_CATALOG_PAGE = 50;
+const MAX_SLUG_LENGTH = 500;
 const catalogDetailCache = new Map();
 
 function cleanText(value) {
@@ -437,7 +438,7 @@ export async function browse(ref, cursor) {
 
 export async function episodes(ref) {
   const slug = String(ref || "");
-  if (!/^[a-z0-9._~-]{1,128}$/i.test(slug)) throw kino.error("not_found", "No se encontró ese anime");
+  if (slug.length > MAX_SLUG_LENGTH || !/^[a-z0-9._~-]+$/i.test(slug)) throw kino.error("not_found", "No se encontró ese anime");
   const html = await getPage("/media/" + encodeURIComponent(slug));
   const data = episodeList(html, slug);
   if (!data.episodes.length) throw kino.error("not_found", "No se encontraron episodios");
@@ -470,7 +471,7 @@ export async function resolve(ref) {
   const split = value.split("|");
   const slug = split[0] || "";
   const number = Number(split[1]);
-  if (split.length !== 2 || !/^[a-z0-9._~-]{1,128}$/i.test(slug) || !Number.isInteger(number) || number < 1 || number > 99999) {
+  if (split.length !== 2 || slug.length > MAX_SLUG_LENGTH || !/^[a-z0-9._~-]+$/i.test(slug) || !Number.isInteger(number) || number < 1 || number > 99999) {
     throw kino.error("not_found", "No se encontró ese episodio");
   }
   const servers = await episodeServers(slug, number);
