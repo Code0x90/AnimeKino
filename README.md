@@ -12,7 +12,7 @@ Plugin comunitario para buscar anime en [AnimeAV1](https://animeav1.com), mostra
 - El reproductor distingue las fuentes por servidor e idioma: PlayerZilla · Japonés, PlayerZilla · Latino, Voe · Japonés y Voe · Latino, según lo que ofrezca cada episodio. Si una fuente falla, Kino puede probar la alternativa disponible.
 - El MAL ID de cada anime se obtiene de su ficha de AnimeAV1. AniList aporta la portada de mayor tamaño disponible al catálogo y a la ficha, además del banner panorámico; la imagen de AnimeAV1 queda como respaldo.
 - La lista de episodios solo entrega temporada, número y referencia de reproducción; el plugin no añade nombres, sinopsis, imágenes, fecha ni duración de capítulos. La ficha pasa los IDs de MAL y AniList que conoce para que Kino pueda enriquecer sus propios metadatos.
-- Los registros de diagnóstico muestran el origen de las imágenes de la ficha, los IDs encontrados y las fuentes de video. En Kino se consultan en el registro del plugin (activa el modo debug si hace falta); en el SDK aparecen en la salida de `node sdk/run.mjs`.
+- Los registros detallan Inicio/búsqueda, ficha, capítulos e imágenes: MAL ID, coincidencia de AniList, proveedor elegido y ruta pública de imagen. En Kino se consultan en el registro del plugin (activa el modo debug si hace falta); en el SDK aparecen en la salida de `node sdk/run.mjs`.
 
 No requiere cuenta ni configuración. Esta versión no declara descargas sin conexión ni un resolutor externo. Excluye los títulos que identifica como contenido adulto para no mostrarlos sin el control +18 de Kino.
 
