@@ -9,7 +9,7 @@ Plugin comunitario para buscar anime en [AnimeAV1](https://animeav1.com), mostra
 - Fichas de series y sus episodios. Si AnimeAV1 no declara temporadas dentro de una ficha, los episodios se presentan en la temporada 1; los grupos de 50 de la web son páginas, no temporadas.
 - Resolución de PlayerZilla: convierte el enlace `/play/<id>` al manifiesto `/m3u8/<id>` y envía los encabezados del reproductor.
 - Resolución de Voe: sigue la redirección JavaScript del embed, decodifica su payload y devuelve el HLS con el `Referer` de Voe.
-- El reproductor permite elegir entre ambas fuentes cuando están disponibles. Si una falla, la otra puede usarse.
+- El reproductor distingue las fuentes por servidor e idioma: PlayerZilla · Japonés, PlayerZilla · Latino, Voe · Japonés y Voe · Latino, según lo que ofrezca cada episodio. Si una fuente falla, Kino puede probar la alternativa disponible.
 
 No requiere cuenta ni configuración. Esta versión no declara descargas sin conexión ni un resolutor externo. Excluye los títulos que identifica como contenido adulto para no mostrarlos sin el control +18 de Kino.
 

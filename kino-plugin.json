@@ -1,7 +1,7 @@
 {
   "id": "animeav1-kino",
   "name": "AnimeAV1",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "apiVersion": 9,
   "entry": "plugin.js",
   "description": "Busca anime en AnimeAV1 y resuelve episodios con Voe o PlayerZilla.",

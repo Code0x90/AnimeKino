@@ -235,15 +235,26 @@ async function episodeServers(slug, number) {
         if (!episode) continue;
         const embeds = data[episode.embeds];
         if (!embeds || typeof embeds !== "object") continue;
-        const list = Array.isArray(embeds) ? embeds : (embeds.SUB ?? embeds.sub);
         const servers = [];
-        for (const ref of Array.isArray(list) ? list : []) {
-          const item = typeof ref === "number" ? data[ref] : ref;
-          if (!item || typeof item !== "object") continue;
-          const field = (v) => typeof v === "number" ? data[v] : v;
-          const name = sourceName(field(item.server));
-          const url = sourceUrl(field(item.url));
-          if (name && url && !servers.some((s) => s.name === name)) servers.push({ name, url });
+        const lanes = Array.isArray(embeds)
+          ? [{ key: "SUB", lang: "Japonés" }]
+          : [
+              { key: "SUB", lang: "Japonés" }, { key: "sub", lang: "Japonés" },
+              { key: "DUB", lang: "Latino" }, { key: "dub", lang: "Latino" },
+            ];
+        for (const lane of lanes) {
+          const listRef = Array.isArray(embeds) ? embeds : embeds[lane.key];
+          const list = typeof listRef === "number" ? data[listRef] : listRef;
+          for (const ref of Array.isArray(list) ? list : []) {
+            const item = typeof ref === "number" ? data[ref] : ref;
+            if (!item || typeof item !== "object") continue;
+            const field = (v) => typeof v === "number" ? data[v] : v;
+            const name = sourceName(field(item.server));
+            const url = sourceUrl(field(item.url));
+            if (name && url && !servers.some((s) => s.name === name && s.lang === lane.lang)) {
+              servers.push({ name, lang: lane.lang, url });
+            }
+          }
         }
         if (servers.length) return servers;
       }
@@ -254,10 +265,16 @@ async function episodeServers(slug, number) {
   const block = /embeds:\{([\s\S]*?)\},downloads:/.exec(html);
   if (!block) return [];
   const servers = [];
-  for (const match of block[1].matchAll(/\{server:"([^"\\]*(?:\\.[^"\\]*)*)",url:"([^"\\]*(?:\\.[^"\\]*)*)"\}/g)) {
-    const name = sourceName(match[1]);
-    const url = sourceUrl(match[2].replace(/\\u0026/gi, "&").replace(/\\\//g, "/"));
-    if (name && url && !servers.some((s) => s.name === name)) servers.push({ name, url });
+  for (const lane of [{ key: "SUB", lang: "Japonés" }, { key: "DUB", lang: "Latino" }]) {
+    const laneBlock = new RegExp("(?:^|[,\\s])" + lane.key + ":\\[([\\s\\S]*?)\\]", "i").exec(block[1]);
+    if (!laneBlock) continue;
+    for (const match of laneBlock[1].matchAll(/\{server:"([^"\\]*(?:\\.[^"\\]*)*)",url:"([^"\\]*(?:\\.[^"\\]*)*)"\}/g)) {
+      const name = sourceName(match[1]);
+      const url = sourceUrl(match[2].replace(/\\u0026/gi, "&").replace(/\\\//g, "/"));
+      if (name && url && !servers.some((s) => s.name === name && s.lang === lane.lang)) {
+        servers.push({ name, lang: lane.lang, url });
+      }
+    }
   }
   return servers;
 }
@@ -374,7 +391,9 @@ export async function resolve(ref) {
   for (const server of servers) {
     try {
       const stream = server.name === "PlayerZilla" ? playerZillaStream(server.url) : await voeStream(server.url);
-      if (stream && !resolved.some((item) => item.url === stream.url)) resolved.push({ ...stream, label: server.name });
+      if (stream && !resolved.some((item) => item.url === stream.url)) {
+        resolved.push({ ...stream, label: server.name + " · " + server.lang });
+      }
     } catch { /* A failed source does not prevent trying the other supported source. */ }
   }
   if (!resolved.length) throw kino.error("unavailable", "No se pudo resolver Voe ni PlayerZilla para este episodio");

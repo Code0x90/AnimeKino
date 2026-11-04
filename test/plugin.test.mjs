@@ -59,4 +59,6 @@ test("resolve returns the observed HLS manifest", () => {
     result.url,
     "https://player.zilla-networks.com/m3u8/7601658844858539e438dceee32e7924",
   );
+  assert.equal(result.label, "PlayerZilla · Japonés");
+  assert.ok(!result.alternatives || result.alternatives.every((source) => source.label.includes("Japonés")));
 });
