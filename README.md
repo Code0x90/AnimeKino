@@ -10,9 +10,8 @@ Plugin comunitario para buscar anime en [AnimeAV1](https://animeav1.com), mostra
 - Resolución de PlayerZilla: convierte el enlace `/play/<id>` al manifiesto `/m3u8/<id>` y envía los encabezados del reproductor.
 - Resolución de Voe: sigue la redirección JavaScript del embed, decodifica su payload y devuelve el HLS con el `Referer` de Voe.
 - El reproductor distingue las fuentes por servidor e idioma: PlayerZilla · Japonés, PlayerZilla · Latino, Voe · Japonés y Voe · Latino, según lo que ofrezca cada episodio. Si una fuente falla, Kino puede probar la alternativa disponible.
-- Las portadas del catálogo priorizan AniList por coincidencia exacta del MAL ID y usan AnimeAV1 como respaldo. En la ficha, el banner panorámico de AniList o la portada horizontal de Kitsu evita ampliar una miniatura de episodio como fondo.
-- Los episodios usan metadatos de Kitsu cuando AnimeAV1 proporciona un MAL ID: título disponible en español, luego inglés, luego japonés; miniatura, fecha de emisión y duración. Si Kitsu no tiene el anime o falla la consulta, se conserva la lista de AnimeAV1.
-- Los registros de diagnóstico muestran qué proveedor aportó cada portada, qué títulos del catálogo siguen sin imagen, cuántos episodios encontró Kitsu y qué fuente de video se seleccionó. En Kino se consultan en el registro del plugin (activa el modo debug si hace falta); en el SDK aparecen en la salida de `node sdk/run.mjs`.
+- Las portadas externas de AniList por MAL ID y las imágenes de Kitsu están desactivadas para comparar la presentación. El catálogo y la ficha conservan las imágenes que entrega AnimeAV1; Kitsu mantiene solo los nombres, fechas y duración de los episodios.
+- Los registros de diagnóstico indican si Kino recibió una imagen de AnimeAV1, si faltó, cuántos episodios encontró Kitsu y qué fuente de video se seleccionó. En Kino se consultan en el registro del plugin (activa el modo debug si hace falta); en el SDK aparecen en la salida de `node sdk/run.mjs`.
 
 No requiere cuenta ni configuración. Esta versión no declara descargas sin conexión ni un resolutor externo. Excluye los títulos que identifica como contenido adulto para no mostrarlos sin el control +18 de Kino.
 
@@ -36,4 +35,4 @@ node sdk/run.mjs . resolve "one-piece|1"
 
 ## Permisos de red
 
-El manifiesto declara los hosts del catálogo, `player.zilla-networks.com`, `voe.sx`, `kitsu.io` y `graphql.anilist.co`. Voe usa redirecciones y CDN variables, así que el plugin solicita acceso a hosts públicos HTTPS para buscar el embed redirigido y reproducir su HLS. AniList aporta portadas y banners por MAL ID; Kitsu aporta metadatos de episodios. Kino muestra estos permisos al instalarlo.
+El manifiesto declara los hosts del catálogo, `player.zilla-networks.com`, `voe.sx` y `kitsu.io`. Voe usa redirecciones y CDN variables, así que el plugin solicita acceso a hosts públicos HTTPS para buscar el embed redirigido y reproducir su HLS. Kitsu aporta metadatos de episodios, sin imágenes. Kino muestra estos permisos al instalarlo.
