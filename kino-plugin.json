@@ -1,7 +1,7 @@
 {
   "id": "animeav1-kino",
   "name": "AnimeAV1",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "apiVersion": 9,
   "entry": "plugin.js",
   "description": "Busca anime en AnimeAV1 y resuelve episodios con Voe o PlayerZilla.",
@@ -9,7 +9,8 @@
     "animeav1.com",
     "cdn.animeav1.com",
     "player.zilla-networks.com",
-    "voe.sx"
+    "voe.sx",
+    "kitsu.io"
   ],
   "streamHosts": "any",
   "fetchHosts": "any",

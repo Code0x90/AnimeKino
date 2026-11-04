@@ -3,6 +3,7 @@
 // player.zilla-networks.com/play/<id> page whose player loads /m3u8/<id>.
 
 const BASE = "https://animeav1.com";
+const KITSU = "https://kitsu.io/api/edge";
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 const PAGE_SIZE = 20;
 const MAX_CATALOG_PAGE = 50;
@@ -48,14 +49,82 @@ function animeMeta(html, slug) {
     ? [...genreMatches[genreMatches.length - 1][1].matchAll(/slug:"([^"]+)"/g)].map((m) => m[1]).slice(0, 5)
     : [];
   const seasonMatch = /seasons:(null|\[[^\]]*\])/.exec(afterSlug);
+  const malId = /malId:(\d+)/.exec(afterSlug);
 
   return {
     year: date ? date[1] : undefined,
     rating: score ? Number(score[1]) : undefined,
     mature,
     genres,
+    malId: malId ? Number(malId[1]) : undefined,
     seasonValue: seasonMatch ? seasonMatch[1] : "null",
   };
+}
+
+async function getKitsuEpisodes(malId) {
+  if (!Number.isInteger(malId) || malId < 1) return new Map();
+  try {
+    const mappingUrl = KITSU + "/mappings?filter%5BexternalSite%5D=myanimelist%2Fanime&filter%5BexternalId%5D=" + malId + "&include=item";
+    const mappingResponse = await kino.fetch(mappingUrl, {
+      headers: { Accept: "application/vnd.api+json" }, timeoutMs: 15000,
+    });
+    if (!mappingResponse.ok) return new Map();
+    const mapping = mappingResponse.json();
+    const animeId = (mapping.included || []).find((item) => item && item.type === "anime")?.id;
+    if (!animeId || !/^\d+$/.test(String(animeId))) return new Map();
+
+    const animeResponse = await kino.fetch(KITSU + "/anime/" + animeId + "?include=episodes", {
+      headers: { Accept: "application/vnd.api+json" }, timeoutMs: 20000,
+    });
+    if (!animeResponse.ok) return new Map();
+    const anime = animeResponse.json();
+    const byNumber = new Map();
+    for (const item of anime.included || []) {
+      if (!item || item.type !== "episodes" || !item.attributes) continue;
+      const attributes = item.attributes;
+      const number = Number(attributes.number);
+      if (!Number.isInteger(number) || number < 1) continue;
+      const titles = attributes.titles || {};
+      const title = titles.es || titles.es_es || titles.es_mx || titles.es_419 || titles.en || titles.en_us ||
+        titles.ja_jp || attributes.canonicalTitle || titles.en_jp || "";
+      const thumbnail = attributes.thumbnail && attributes.thumbnail.original;
+      const still = typeof thumbnail === "string" && /^https:\/\//i.test(thumbnail) ? thumbnail : undefined;
+      const rawAirDate = attributes.airDate || attributes.airdate;
+      const airDate = typeof rawAirDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(rawAirDate)
+        ? rawAirDate : undefined;
+      const runtime = Number(attributes.length);
+      const candidates = byNumber.get(number) || [];
+      candidates.push({
+        season: Number(attributes.seasonNumber) || undefined,
+        title: String(title || "").trim().slice(0, 200),
+        still,
+        airDate,
+        runtimeMinutes: Number.isInteger(runtime) && runtime >= 1 && runtime <= 1000 ? runtime : undefined,
+      });
+      byNumber.set(number, candidates);
+    }
+    return byNumber;
+  } catch {
+    // Metadata is optional: a Kitsu outage or an unmapped MAL id must not hide episodes.
+    return new Map();
+  }
+}
+
+function enrichEpisodes(episodes, metadata) {
+  return episodes.map((episode) => {
+    const candidates = metadata.get(episode.number) || [];
+    const sameSeason = candidates.filter((candidate) => candidate.season === episode.season);
+    const preferred = sameSeason.length === 1 ? sameSeason : candidates.filter((candidate) => candidate.season === 1);
+    const extra = preferred.length === 1 ? preferred[0] : candidates.length === 1 ? candidates[0] : null;
+    if (!extra) return episode;
+    return {
+      ...episode,
+      title: extra.title || episode.title,
+      still: extra.still,
+      airDate: extra.airDate,
+      runtimeMinutes: extra.runtimeMinutes,
+    };
+  });
 }
 
 function stableId(slug) {
@@ -361,6 +430,7 @@ export async function episodes(ref) {
   const html = await getPage("/media/" + encodeURIComponent(slug));
   const data = episodeList(html, slug);
   if (!data.episodes.length) throw kino.error("not_found", "No se encontraron episodios");
+  const episodeMetadata = await getKitsuEpisodes(data.meta.malId);
   const title = titleFrom(html, slug.replace(/-/g, " "));
   const synopsis = /<p\b[^>]*>([\s\S]*?)<\/p>/i.exec(html);
   return {
@@ -373,7 +443,7 @@ export async function episodes(ref) {
       rating: data.meta.rating,
       genres: data.meta.genres.length ? data.meta.genres : ["anime"],
     },
-    episodes: data.episodes,
+    episodes: enrichEpisodes(data.episodes, episodeMetadata),
   };
 }
 
