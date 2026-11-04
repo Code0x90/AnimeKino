@@ -1,0 +1,36 @@
+# AnimeAV1 para Kino
+
+Plugin comunitario para buscar anime en [AnimeAV1](https://animeav1.com), mostrarlo en Inicio y resolver episodios usando solo PlayerZilla y Voe.
+
+## Incluye
+
+- Búsqueda por título.
+- Una fila de animes recientes en Inicio, con paginación del catálogo.
+- Fichas de series y sus episodios. Si AnimeAV1 no declara temporadas dentro de una ficha, los episodios se presentan en la temporada 1; los grupos de 50 de la web son páginas, no temporadas.
+- Resolución de PlayerZilla: convierte el enlace `/play/<id>` al manifiesto `/m3u8/<id>` y envía los encabezados del reproductor.
+- Resolución de Voe: sigue la redirección JavaScript del embed, decodifica su payload y devuelve el HLS con el `Referer` de Voe.
+- El reproductor permite elegir entre ambas fuentes cuando están disponibles. Si una falla, la otra puede usarse.
+
+No requiere cuenta ni configuración. Esta versión no declara descargas sin conexión ni un resolutor externo. Excluye los títulos que identifica como contenido adulto para no mostrarlos sin el control +18 de Kino.
+
+## Pruebas locales
+
+El kit `sdk/` proviene de la plantilla oficial de Kino. Las pruebas usan respuestas guardadas en `fixtures/` y no necesitan conexión:
+
+```powershell
+node sdk/validate.mjs .
+node --test test/plugin.test.mjs
+```
+
+Para consultar la fuente en vivo manualmente:
+
+```powershell
+node sdk/run.mjs . home
+node sdk/run.mjs . search "Frieren"
+node sdk/run.mjs . episodes one-piece
+node sdk/run.mjs . resolve "one-piece|1"
+```
+
+## Permisos de red
+
+El manifiesto declara los hosts del catálogo, `player.zilla-networks.com` y `voe.sx`. Voe usa redirecciones y CDN variables, así que el plugin solicita acceso a hosts públicos HTTPS para buscar el embed redirigido y reproducir su HLS. Kino muestra este permiso al instalarlo.

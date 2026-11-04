@@ -1,0 +1,25 @@
+{
+  "id": "animeav1-kino",
+  "name": "AnimeAV1",
+  "version": "1.1.0",
+  "apiVersion": 9,
+  "entry": "plugin.js",
+  "description": "Busca anime en AnimeAV1 y resuelve episodios con Voe o PlayerZilla.",
+  "hosts": [
+    "animeav1.com",
+    "cdn.animeav1.com",
+    "player.zilla-networks.com",
+    "voe.sx"
+  ],
+  "streamHosts": "any",
+  "fetchHosts": "any",
+  "capabilities": [
+    "search",
+    "home",
+    "browse",
+    "episodes",
+    "resolve"
+  ],
+  "color": "#D92535",
+  "icon": "icon.png"
+}
