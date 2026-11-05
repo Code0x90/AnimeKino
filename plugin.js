@@ -78,37 +78,7 @@ function debugLog(area, details = {}) {
   } catch {}
 }
 
-function cleanEpisodeTitle(value, episodeNumber) {
-  const title = cleanText(value);
-  if (!title) return undefined;
-  if (/^(?:episode|ep(?:isode)?\.?|episodio|cap[ií]tulo|capitulo|chapter|第)\s*#?\s*\d+\s*$/i.test(title) || /^#?\d+$/.test(title)) return undefined;
-  const numbered = /^(?:episode|ep(?:isode)?\.?|episodio|cap[ií]tulo|capitulo|chapter|e)\s*#?\s*(\d+)\s*[:：.\-–—|]\s*(.+)$/i.exec(title)
-    || /^0*(\d+)\s*[:：.\-–—|]\s*(.+)$/.exec(title);
-  if (numbered) {
-    if (!Number.isInteger(episodeNumber) || Number(numbered[1]) === episodeNumber) return cleanEpisodeTitle(numbered[2], episodeNumber);
-  }
-  return title;
-}
-
-function aniListEpisodeTitleMap(media, episodes) {
-  const entries = Array.isArray(media?.streamingEpisodes) ? media.streamingEpisodes : [];
-  const playable = episodes.filter((episode) => !episode.ref.endsWith("|0"));
-  const result = new Map();
-  for (let index = 0; index < entries.length; index++) {
-    const entry = entries[index];
-    const rawTitle = cleanText(entry?.title);
-    if (!rawTitle) continue;
-    const explicit = /^(?:episode|ep(?:isode)?\.?|episodio|cap[ií]tulo|capitulo|e)\s*#?\s*(\d+)/i.exec(rawTitle)
-      || /^0*(\d+)\s*[:：.\-–—|]/.exec(rawTitle);
-    const number = explicit ? Number(explicit[1]) : entries.length === playable.length ? playable[index]?.number : 0;
-    const localEpisode = playable.find((episode) => episode.number === number);
-    const title = cleanEpisodeTitle(rawTitle, number);
-    if (localEpisode && title) result.set(localEpisode.season + ":" + number, title);
-  }
-  return result;
-}
-
-async function getAniListMedia(malIds, includeEpisodeTitles = false) {
+async function getAniListMedia(malIds) {
   const ids = [...new Set((malIds || []).filter((id) => Number.isInteger(id) && id > 0))].slice(0, 50);
   if (!ids.length) return new Map();
   try {
@@ -116,7 +86,7 @@ async function getAniListMedia(malIds, includeEpisodeTitles = false) {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json" },
       body: { json: {
-        query: "query ($ids: [Int]) { Page(perPage: 50) { media(type: ANIME, idMal_in: $ids) { id idMal coverImage { extraLarge large } bannerImage" + (includeEpisodeTitles ? " streamingEpisodes { title thumbnail url site }" : "") + " } } }",
+        query: "query ($ids: [Int]) { Page(perPage: 50) { media(type: ANIME, idMal_in: $ids) { id idMal coverImage { extraLarge large } bannerImage } } }",
         variables: { ids },
       } },
       timeoutMs: 8000,
@@ -134,7 +104,6 @@ async function getAniListMedia(malIds, includeEpisodeTitles = false) {
         anilistId: Number(media.id) || undefined,
         poster: [cover.extraLarge, cover.large].find(isPublicImage),
         backdrop: isPublicImage(media.bannerImage) ? media.bannerImage : undefined,
-        streamingEpisodes: includeEpisodeTitles ? (media.streamingEpisodes || []) : undefined,
       });
     }
     return out;
@@ -236,7 +205,6 @@ async function getKitsuEpisodeMetadata(malId, episodes) {
         if (!localEpisode) continue;
         matchedOnPage++;
         const titleFields = localizedKitsuEpisodeTitles(entry.attributes);
-        for (const key of Object.keys(titleFields)) titleFields[key] = cleanEpisodeTitle(titleFields[key], number);
         const title = titleFields.spanish || titleFields.english || titleFields.japanese || titleFields.canonical;
         const validStill = isPublicImage(still) ? still : undefined;
         if (title) titlesOnPage++;
@@ -300,7 +268,7 @@ function metadataEpisodesForSeason(metadata, year, localEpisodes) {
   for (const episode of candidates[0][1]) {
     const number = Number(episode.number);
     const still = isPublicImage(episode.still) ? episode.still : undefined;
-    const title = cleanEpisodeTitle(episode.title, number);
+    const title = cleanText(episode.title);
     const localEpisode = localEpisodes.find((item) => item.number === number);
     if (localEpisode && (still || title)) result.set(localEpisode.season + ":" + number, { still, title: title || undefined });
   }
@@ -711,8 +679,7 @@ export async function episodes(ref) {
     firstEpisode: data.episodes[0]?.number,
     lastEpisode: data.episodes[data.episodes.length - 1]?.number,
   });
-  const animeImages = (await getAniListMedia([data.meta.malId], true)).get(data.meta.malId);
-  const aniListTitles = aniListEpisodeTitleMap(animeImages, data.episodes);
+  const animeImages = (await getAniListMedia([data.meta.malId])).get(data.meta.malId);
   const ids = {};
   if (Number.isInteger(data.meta.malId) && data.meta.malId > 0) ids.mal = data.meta.malId;
   if (Number.isInteger(animeImages && animeImages.anilistId) && animeImages.anilistId > 0) ids.anilist = animeImages.anilistId;
@@ -729,21 +696,15 @@ export async function episodes(ref) {
     ? await getEpisodeMetadata(ids, title, data.meta.year, data.episodes)
     : new Map();
   const languageIsSpanish = String(kino.lang || "").toLowerCase().startsWith("es");
-  const metadataSources = [];
-  if (kitsuEpisodes?.size) metadataSources.push("kitsu");
-  if (aniListTitles.size) metadataSources.push("anilist");
-  if (kinoEpisodes.size) metadataSources.push("kino_meta");
   debugLog("episodes", {
     step: "episode_metadata_source",
-    source: metadataSources.join("+") || "none",
+    source: kitsuEpisodes?.size ? (kinoEpisodes.size ? "kitsu+kino_meta" : "kitsu") : "kino_meta",
     kitsuEpisodes: kitsuEpisodes?.size || 0,
-    aniListStreamingEpisodes: animeImages?.streamingEpisodes?.length || 0,
-    aniListTitles: aniListTitles.size,
     kinoEpisodes: kinoEpisodes.size,
     titleCount: data.episodes.filter((episode) => {
       const key = episode.season + ":" + episode.number;
       const kitsu = kitsuEpisodes?.get(key);
-      return Boolean(kitsu?.spanish || kitsu?.english || kitsu?.japanese || kitsu?.canonical || aniListTitles.has(key) || kinoEpisodes.get(key)?.title);
+      return Boolean(kitsu?.spanish || kitsu?.english || kitsu?.japanese || kitsu?.canonical || kinoEpisodes.get(key)?.title);
     }).length,
   });
   const synopsis = /<p\b[^>]*>([\s\S]*?)<\/p>/i.exec(html);
@@ -754,7 +715,6 @@ export async function episodes(ref) {
     const episodeTitle = kitsu?.spanish
       || (languageIsSpanish ? meta?.title : undefined)
       || kitsu?.english
-      || aniListTitles.get(key)
       || (!languageIsSpanish ? meta?.title : undefined)
       || kitsu?.japanese
       || kitsu?.canonical;

@@ -1,7 +1,7 @@
 {
   "id": "animeav1-kino",
   "name": "AnimeAV1",
-  "version": "1.4.22",
+  "version": "1.4.23",
   "apiVersion": 9,
   "debug": true,
   "entry": "plugin.js",
