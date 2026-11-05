@@ -240,16 +240,24 @@ function episodeList(html, slug) {
   const raw = html.slice(listAt, end + 1);
   const matches = [...raw.matchAll(/\{id:\d+,number:(\d+)(?:,season:(\d+))?\}/g)];
   const seen = new Set();
-  const episodes = [];
+  const sourceEpisodes = [];
   for (const match of matches) {
     const number = Number(match[1]);
     const season = Number(match[2] || 1);
-    if (number < 1 || season < 1 || number > 99999 || season > 999) continue;
+    if (season < 1 || number > 99999 || season > 999) continue;
     const key = season + ":" + number;
     if (seen.has(key)) continue;
     seen.add(key);
-    episodes.push({ season, number, ref: slug + "|" + number });
+    sourceEpisodes.push({ season, sourceNumber: number });
   }
+  const zeroAndOneSeasons = new Set(sourceEpisodes
+    .filter((episode) => episode.sourceNumber === 0)
+    .filter((zeroEpisode) => sourceEpisodes.some((episode) => episode.season === zeroEpisode.season && episode.sourceNumber === 1))
+    .map((episode) => episode.season));
+  const episodes = sourceEpisodes.map(({ season, sourceNumber }) => {
+    const number = zeroAndOneSeasons.has(season) ? sourceNumber + 1 : Math.max(1, sourceNumber);
+    return { season, number, ref: slug + "|" + sourceNumber };
+  });
   return { meta, episodes };
 }
 
@@ -490,7 +498,7 @@ export async function resolve(ref) {
   const split = value.split("|");
   const slug = split[0] || "";
   const number = Number(split[1]);
-  if (split.length !== 2 || slug.length > MAX_SLUG_LENGTH || !/^[a-z0-9._~-]+$/i.test(slug) || !Number.isInteger(number) || number < 1 || number > 99999) {
+  if (split.length !== 2 || slug.length > MAX_SLUG_LENGTH || !/^[a-z0-9._~-]+$/i.test(slug) || !Number.isInteger(number) || number < 0 || number > 99999) {
     throw kino.error("not_found", "No se encontró ese episodio");
   }
   const servers = await episodeServers(slug, number);
