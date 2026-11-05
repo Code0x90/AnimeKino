@@ -123,14 +123,22 @@ function seasonNumberSets(episodes) {
   return seasons;
 }
 
-function matchEpisodeSeasons(metadataEpisodes, sourceEpisodes) {
-  const metadataSeasons = seasonNumberSets(metadataEpisodes);
+function matchEpisodeSeasons(metadata, sourceEpisodes, sourceTitle, sourceYear, byExactTitle = false) {
+  const metadataSeasons = seasonNumberSets(metadata?.episodes);
   const sourceSeasons = seasonNumberSets(sourceEpisodes);
+  const metadataYear = Number(metadata?.year) || 0;
+  const requestedYear = Number(sourceYear) || 0;
+  const sameTitle = normalizedTitle(metadata?.title) === normalizedTitle(sourceTitle);
+  const sameYear = metadataYear > 0 && requestedYear > 0 && metadataYear === requestedYear;
+  const yearCompatible = !metadataYear || !requestedYear || sameYear;
   const mapping = new Map();
   for (const [sourceSeason, sourceNumbers] of sourceSeasons) {
     const candidates = [...metadataSeasons].filter(([, numbers]) => [...sourceNumbers].every((number) => numbers.has(number)));
     const exact = candidates.filter(([, numbers]) => numbers.size === sourceNumbers.size);
-    const match = exact.length === 1 ? exact[0] : candidates.length === 1 ? candidates[0] : null;
+    let match = exact.length === 1 ? exact[0] : null;
+    if (!match && metadataSeasons.size === 1 && metadataSeasons.has(sourceSeason) && (byExactTitle || sameTitle || yearCompatible)) {
+      match = [...metadataSeasons][0];
+    }
     if (match) mapping.set(sourceSeason, match[0]);
   }
   return mapping;
@@ -159,15 +167,15 @@ async function getEpisodeStills(ids, title, year, episodes) {
     } catch {}
   }
   const playableEpisodes = episodes.filter((episode) => !episode.ref.endsWith("|0"));
-  let seasonMapping = matchEpisodeSeasons(byTitle?.episodes, playableEpisodes);
+  let seasonMapping = matchEpisodeSeasons(byTitle, playableEpisodes, title, year, !!byTitle);
   const stills = episodeStillMap(byTitle, seasonMapping);
   const missing = () => playableEpisodes.some((episode) => !stills.has(episode.season + ":" + episode.number));
 
   if (missing() && ids && Object.keys(ids).length) {
     try {
       byIds = await kino.meta({ type: "series", ids, lang: kino.lang });
-      if (normalizedTitle(byIds?.title) === normalizedTitle(title)) {
-        const byIdsSeasonMapping = matchEpisodeSeasons(byIds.episodes, playableEpisodes);
+      const byIdsSeasonMapping = matchEpisodeSeasons(byIds, playableEpisodes, title, year);
+      if (byIdsSeasonMapping.size) {
         if (!seasonMapping.size) seasonMapping = byIdsSeasonMapping;
         for (const [key, still] of episodeStillMap(byIds, byIdsSeasonMapping)) {
           if (!stills.has(key)) stills.set(key, still);
@@ -176,8 +184,8 @@ async function getEpisodeStills(ids, title, year, episodes) {
     } catch {}
   }
 
-  const byIdsTitleMatches = normalizedTitle(byIds?.title) === normalizedTitle(title);
-  const tmdbId = Number(byTitle?.ids?.tmdb || (byIdsTitleMatches ? byIds?.ids?.tmdb : 0));
+  const byIdsSeasonMapping = matchEpisodeSeasons(byIds, playableEpisodes, title, year);
+  const tmdbId = Number(byTitle?.ids?.tmdb || (byIdsSeasonMapping.size ? byIds?.ids?.tmdb : 0));
   if (missing() && Number.isInteger(tmdbId) && tmdbId > 0 && typeof kino.tmdb === "function") {
     const missingSeasons = [...new Set(playableEpisodes
       .filter((episode) => !stills.has(episode.season + ":" + episode.number))
