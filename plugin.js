@@ -117,19 +117,51 @@ function episodeStillMap(metadata) {
   return stills;
 }
 
-function seasonForYear(show, year, episodeCount) {
-  const requestedYear = Number(year);
-  if (!Number.isInteger(requestedYear) || requestedYear < 1870 || requestedYear > 2100) return 0;
-  const candidates = (show?.seasons || []).filter((season) => {
-    const airYear = Number(String(season.air_date || "").slice(0, 4));
-    return Number(season.season_number) > 0 && airYear === requestedYear;
-  });
-  if (candidates.length === 1) return Number(candidates[0].season_number);
-  const exactCount = candidates.filter((season) => Number(season.episode_count) === episodeCount);
-  return exactCount.length === 1 ? Number(exactCount[0].season_number) : 0;
+async function getKitsuEpisodeStills(malId, episodes) {
+  if (!Number.isInteger(malId) || malId < 1) return null;
+  const playableEpisodes = episodes.filter((episode) => !episode.ref.endsWith("|0"));
+  if (!playableEpisodes.length) return null;
+  const headers = { Accept: "application/vnd.api+json" };
+  try {
+    const mappingUrl = "https://kitsu.io/api/edge/mappings?filter%5BexternalSite%5D=myanimelist%2Fanime&filter%5BexternalId%5D=" + malId;
+    const mappingResponse = await kino.fetch(mappingUrl, { headers, timeoutMs: 8000 });
+    if (!mappingResponse.ok) return null;
+    const mappings = mappingResponse.json()?.data || [];
+    const animeIds = [...new Set(mappings
+      .filter((mapping) => mapping.attributes?.externalSite === "myanimelist/anime" && String(mapping.attributes?.externalId) === String(malId))
+      .map((mapping) => mapping.relationships?.item?.data)
+      .filter((item) => item?.type === "anime" && /^\d+$/.test(String(item.id)))
+      .map((item) => String(item.id)))];
+    // Do not guess when the cross-reference is ambiguous.
+    if (animeIds.length !== 1) return null;
+
+    const stills = new Map();
+    let offset = 0;
+    const pageSize = 20;
+    for (let page = 0; page < 25; page++) {
+      const url = "https://kitsu.io/api/edge/anime/" + animeIds[0] + "/episodes?page%5Blimit%5D=" + pageSize + "&page%5Boffset%5D=" + offset + "&sort=number";
+      const response = await kino.fetch(url, { headers, timeoutMs: 8000 });
+      if (!response.ok) break;
+      const body = response.json();
+      const entries = body?.data || [];
+      for (const entry of entries) {
+        const number = Number(entry.attributes?.number);
+        const thumbnail = entry.attributes?.thumbnail;
+        const still = typeof thumbnail === "string" ? thumbnail : thumbnail?.original;
+        const localEpisode = playableEpisodes.find((item) => item.number === number);
+        if (!localEpisode || !isPublicImage(still)) continue;
+        stills.set(localEpisode.season + ":" + number, still);
+      }
+      if (entries.length < pageSize || !body?.links?.next) break;
+      offset += pageSize;
+    }
+    return stills.size ? stills : null;
+  } catch {
+    return null;
+  }
 }
 
-async function getEpisodeStills(ids, title, year, episodes) {
+async function getEpisodeStills(ids, title, year) {
   let byTitle;
   let byIds;
   if (typeof kino.meta === "function" && kino.meta.byTitle === true && title) {
@@ -137,7 +169,6 @@ async function getEpisodeStills(ids, title, year, episodes) {
       byTitle = await kino.meta({ type: "series", title, year: Number(year) || undefined, lang: kino.lang });
     } catch {}
   }
-  const playableEpisodes = episodes.filter((episode) => !episode.ref.endsWith("|0"));
   const stills = episodeStillMap(byTitle);
   if (typeof kino.meta === "function" && ids && Object.keys(ids).length) {
     try {
@@ -148,35 +179,6 @@ async function getEpisodeStills(ids, title, year, episodes) {
     } catch {}
   }
 
-  let tmdbId = Number(byIds?.ids?.tmdb || byTitle?.ids?.tmdb);
-  if (Number.isInteger(tmdbId) && tmdbId > 0 && typeof kino.tmdb === "function") {
-    try {
-      const show = await kino.tmdb(`/tv/${tmdbId}`, { language: "es-MX" });
-      const tmdbSeason = seasonForYear(show, year, playableEpisodes.length);
-      if (tmdbSeason) {
-        const data = await kino.tmdb(`/tv/${tmdbId}/season/${tmdbSeason}`, { language: "es-MX" });
-        const tmdbStills = new Map();
-        // AnimeAV1 often exposes a single local season for a show that TMDB
-        // splits into several seasons. When the page year identifies one TMDB
-        // season, replace that local season's stills so earlier metadata cannot
-        // leave first-season artwork on a later-season title.
-        for (const episode of data?.episodes || []) {
-          const number = Number(episode.episode_number);
-          if (number < 1 || typeof episode.still_path !== "string" || !episode.still_path.startsWith("/")) continue;
-          const localEpisode = playableEpisodes.find((item) => item.number === number);
-          if (localEpisode) tmdbStills.set(localEpisode.season + ":" + number, "https://image.tmdb.org/t/p/w780" + episode.still_path);
-        }
-        if (tmdbStills.size) {
-          const localSeasons = new Set(playableEpisodes.map((episode) => Number(episode.season || 1)));
-          for (const key of stills.keys()) {
-            const [season] = key.split(":").map(Number);
-            if (localSeasons.has(season)) stills.delete(key);
-          }
-          for (const [key, still] of tmdbStills) stills.set(key, still);
-        }
-      }
-    } catch {}
-  }
   return stills;
 }
 
@@ -550,7 +552,8 @@ export async function episodes(ref) {
   const poster = animeImages?.poster || posterFrom(html);
   const backdrop = animeImages?.backdrop || backdropFrom(html);
   const title = titleFrom(html, slug.replace(/-/g, " "));
-  const episodeStills = await getEpisodeStills(ids, title, data.meta.year, data.episodes);
+  const episodeStills = await getKitsuEpisodeStills(data.meta.malId, data.episodes)
+    || await getEpisodeStills(ids, title, data.meta.year);
   const synopsis = /<p\b[^>]*>([\s\S]*?)<\/p>/i.exec(html);
   const episodesWithStills = data.episodes.map((episode) => {
     const still = episodeStills.get(episode.season + ":" + episode.number);
