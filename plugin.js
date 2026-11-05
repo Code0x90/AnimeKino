@@ -9,6 +9,14 @@ const PAGE_SIZE = 20;
 const MAX_CATALOG_PAGE = 50;
 const MAX_SLUG_LENGTH = 500;
 const catalogDetailCache = new Map();
+const HOME_CATALOGS = [
+  { id: "anime-mejor-puntuados", title: "Mejor puntuados", ref: "catalogo:order:score", path: "/catalogo?order=score&page=1" },
+  { id: "anime-recientes", title: "Recientes", ref: "catalogo:order:latest_added", path: "/catalogo?order=latest_added&page=1" },
+  { id: "anime-series", title: "Series", ref: "catalogo:category:tv-anime", path: "/catalogo?category=tv-anime&page=1" },
+  { id: "anime-peliculas", title: "Películas", ref: "catalogo:category:pelicula", path: "/catalogo?category=pelicula&page=1" },
+  { id: "anime-ovas", title: "OVAs", ref: "catalogo:category:ova", path: "/catalogo?category=ova&page=1" },
+  { id: "anime-especiales", title: "Especiales", ref: "catalogo:category:especial", path: "/catalogo?category=especial&page=1" },
+];
 
 function cleanText(value) {
   return String(value || "")
@@ -420,18 +428,29 @@ export async function search(query) {
 }
 
 export async function home() {
-  const html = await getPage("/catalogo");
-  const items = await enrichCatalogArtwork(parseCards(html));
-  if (!items.length) return [];
-  return [{ id: "anime-recientes", title: "Animes recientes", genre: "anime", ref: "catalogo", items }];
+  const rows = await Promise.all(HOME_CATALOGS.map(async (catalog, index) => {
+    try {
+      const html = await getPage(catalog.path);
+      const items = await enrichCatalogArtwork(parseCards(html));
+      return items.length ? { ...catalog, genre: "anime", items } : null;
+    } catch (error) {
+      if (index === 0) throw error;
+      return null;
+    }
+  }));
+  return rows.filter(Boolean);
 }
 
 export async function browse(ref, cursor) {
   await null;
-  if (ref !== "catalogo") throw kino.error("not_found", "No existe esa sección");
+  const match = /^(catalogo|catalogo:(genre|category|order):([a-z0-9_-]+))$/.exec(String(ref || ""));
+  if (!match) throw kino.error("not_found", "No existe esa sección");
   const page = validPage(cursor);
   if (!page) throw kino.error("not_found", "No existe esa página");
-  const html = await getPage("/catalogo?page=" + page);
+  const path = match[2]
+    ? "/catalogo?" + match[2] + "=" + encodeURIComponent(match[3]) + "&page=" + page
+    : "/catalogo?page=" + page;
+  const html = await getPage(path);
   const items = await enrichCatalogArtwork(parseCards(html));
   return { items, next: nextPage(items, page) };
 }
