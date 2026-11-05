@@ -106,57 +106,97 @@ async function getAniListMedia(malIds) {
   }
 }
 
-function episodeStillMap(metadata) {
+function normalizedTitle(value) {
+  return cleanText(value).normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function seasonNumberSets(episodes) {
+  const seasons = new Map();
+  for (const episode of episodes || []) {
+    const season = Number(episode.season || 1);
+    const number = Number(episode.number);
+    if (season < 1 || number < 1) continue;
+    if (!seasons.has(season)) seasons.set(season, new Set());
+    seasons.get(season).add(number);
+  }
+  return seasons;
+}
+
+function matchEpisodeSeasons(metadataEpisodes, sourceEpisodes) {
+  const metadataSeasons = seasonNumberSets(metadataEpisodes);
+  const sourceSeasons = seasonNumberSets(sourceEpisodes);
+  const mapping = new Map();
+  for (const [sourceSeason, sourceNumbers] of sourceSeasons) {
+    const candidates = [...metadataSeasons].filter(([, numbers]) => [...sourceNumbers].every((number) => numbers.has(number)));
+    const exact = candidates.filter(([, numbers]) => numbers.size === sourceNumbers.size);
+    const match = exact.length === 1 ? exact[0] : candidates.length === 1 ? candidates[0] : null;
+    if (match) mapping.set(sourceSeason, match[0]);
+  }
+  return mapping;
+}
+
+function episodeStillMap(metadata, seasonMapping) {
   const stills = new Map();
+  const localSeasons = new Map([...seasonMapping].map(([local, remote]) => [remote, local]));
   for (const episode of metadata?.episodes || []) {
     const season = Number(episode.season || 1);
     const number = Number(episode.number);
-    if (season < 1 || number < 1 || !isPublicImage(episode.still)) continue;
-    stills.set(season + ":" + number, episode.still);
+    const localSeason = localSeasons.get(season);
+    if (!localSeason || number < 1 || !isPublicImage(episode.still)) continue;
+    stills.set(localSeason + ":" + number, episode.still);
   }
   return stills;
 }
 
 async function getEpisodeStills(ids, title, year, episodes) {
   if (typeof kino.meta !== "function") return new Map();
-  let byIds;
   let byTitle;
-  if (ids && Object.keys(ids).length) {
-    try {
-      byIds = await kino.meta({ type: "series", ids, lang: kino.lang });
-    } catch {}
-  }
-  let stills = episodeStillMap(byIds);
-  const playableEpisodes = episodes.filter((episode) => !episode.ref.endsWith("|0"));
-  const missing = () => playableEpisodes.some((episode) => !stills.has(episode.season + ":" + episode.number));
-
-  if (missing() && kino.meta.byTitle === true && title) {
+  let byIds;
+  if (kino.meta.byTitle === true && title) {
     try {
       byTitle = await kino.meta({ type: "series", title, year: Number(year) || undefined, lang: kino.lang });
-      for (const [key, still] of episodeStillMap(byTitle)) {
-        if (!stills.has(key)) stills.set(key, still);
+    } catch {}
+  }
+  const playableEpisodes = episodes.filter((episode) => !episode.ref.endsWith("|0"));
+  let seasonMapping = matchEpisodeSeasons(byTitle?.episodes, playableEpisodes);
+  const stills = episodeStillMap(byTitle, seasonMapping);
+  const missing = () => playableEpisodes.some((episode) => !stills.has(episode.season + ":" + episode.number));
+
+  if (missing() && ids && Object.keys(ids).length) {
+    try {
+      byIds = await kino.meta({ type: "series", ids, lang: kino.lang });
+      if (normalizedTitle(byIds?.title) === normalizedTitle(title)) {
+        const byIdsSeasonMapping = matchEpisodeSeasons(byIds.episodes, playableEpisodes);
+        if (!seasonMapping.size) seasonMapping = byIdsSeasonMapping;
+        for (const [key, still] of episodeStillMap(byIds, byIdsSeasonMapping)) {
+          if (!stills.has(key)) stills.set(key, still);
+        }
       }
     } catch {}
   }
 
-  const tmdbId = Number(byIds?.ids?.tmdb || byTitle?.ids?.tmdb);
+  const byIdsTitleMatches = normalizedTitle(byIds?.title) === normalizedTitle(title);
+  const tmdbId = Number(byTitle?.ids?.tmdb || (byIdsTitleMatches ? byIds?.ids?.tmdb : 0));
   if (missing() && Number.isInteger(tmdbId) && tmdbId > 0 && typeof kino.tmdb === "function") {
     const missingSeasons = [...new Set(playableEpisodes
       .filter((episode) => !stills.has(episode.season + ":" + episode.number))
-      .map((episode) => episode.season))].slice(0, 4);
+      .map((episode) => episode.season))]
+      .filter((season) => seasonMapping.has(season)).slice(0, 4);
     const seasonData = await Promise.all(missingSeasons.map(async (season) => {
+      const metadataSeason = seasonMapping.get(season);
       try {
-        return await kino.tmdb(`/tv/${tmdbId}/season/${season}`, { language: "es-MX" });
+        return { season, metadataSeason, data: await kino.tmdb(`/tv/${tmdbId}/season/${metadataSeason}`, { language: "es-MX" }) };
       } catch {
         return null;
       }
     }));
-    for (const data of seasonData) {
-      for (const episode of data?.episodes || []) {
-        const season = Number(episode.season_number || data.season_number || 1);
+    for (const result of seasonData) {
+      for (const episode of result?.data?.episodes || []) {
+        const metadataSeason = Number(episode.season_number || result.data.season_number || result.metadataSeason);
         const number = Number(episode.episode_number);
-        if (season < 1 || number < 1 || typeof episode.still_path !== "string" || !episode.still_path.startsWith("/")) continue;
-        const key = season + ":" + number;
+        if (metadataSeason !== result.metadataSeason || number < 1 || typeof episode.still_path !== "string" || !episode.still_path.startsWith("/")) continue;
+        const key = result.season + ":" + number;
         if (!stills.has(key)) stills.set(key, "https://image.tmdb.org/t/p/w780" + episode.still_path);
       }
     }
