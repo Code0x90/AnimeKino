@@ -165,6 +165,7 @@ async function getKitsuEpisodeStills(malId, episodes) {
     }
 
     const stills = new Map();
+    const uniqueImages = new Set();
     let offset = 0;
     const pageSize = 20;
     for (let page = 0; page < 25; page++) {
@@ -187,14 +188,15 @@ async function getKitsuEpisodeStills(malId, episodes) {
         matchedOnPage++;
         if (!isPublicImage(still)) continue;
         stills.set(localEpisode.season + ":" + number, still);
+        uniqueImages.add(still);
         imagesOnPage++;
       }
-      debugLog("kitsu", { step: "episodes_response", kitsuId: animeIds[0], page: page + 1, ok: true, returned: entries.length, matched: matchedOnPage, images: imagesOnPage, totalImages: stills.size });
+      debugLog("kitsu", { step: "episodes_response", kitsuId: animeIds[0], page: page + 1, ok: true, returned: entries.length, matched: matchedOnPage, images: imagesOnPage, totalImages: stills.size, uniqueImages: uniqueImages.size });
       if (stills.size >= playableEpisodes.length) break;
       if (entries.length < pageSize || !body?.links?.next) break;
       offset += pageSize;
     }
-    debugLog("kitsu", { step: "result", kitsuId: animeIds[0], imageCount: stills.size, expectedEpisodes: playableEpisodes.length, fallback: stills.size === 0 });
+    debugLog("kitsu", { step: "result", kitsuId: animeIds[0], imageCount: stills.size, uniqueImages: uniqueImages.size, expectedEpisodes: playableEpisodes.length, fallback: stills.size === 0 });
     return stills.size ? stills : null;
   } catch (error) {
     debugLog("kitsu", { step: "error", name: error?.name || "Error", code: error?.code || "unknown" });
@@ -229,7 +231,6 @@ function metadataStillsForSeason(metadata, year, localEpisodes) {
     const exact = candidates.filter(([, list]) => list.length === localEpisodes.length);
     if (exact.length === 1) candidates = exact;
   }
-  if (candidates.length === 1 && candidates[0][1].length > localEpisodes.length * 1.5) candidates = [];
   if (candidates.length !== 1 && groups.size === 1 && groups.values().next().value.length === localEpisodes.length) {
     candidates = [...groups.entries()];
   }
@@ -254,7 +255,7 @@ async function getEpisodeStills(ids, title, year, episodes) {
   if (typeof kino.meta === "function" && kino.meta.byTitle === true && title) {
     try {
       byTitle = await kino.meta({ type: "series", title, year: Number(year) || undefined, lang: kino.lang });
-      debugLog("kino_meta", { step: "by_title", found: Boolean(byTitle), tmdbId: byTitle?.ids?.tmdb, episodeCount: byTitle?.episodes?.length || 0, stillCount: episodeStillMap(byTitle).size });
+      debugLog("kino_meta", { step: "by_title", found: Boolean(byTitle), tmdbId: byTitle?.ids?.tmdb, episodeCount: byTitle?.episodes?.length || 0, stillCount: episodeStillMap(byTitle).size, uniqueImages: new Set([...episodeStillMap(byTitle).values()]).size });
     } catch (error) {
       debugLog("kino_meta", { step: "by_title_error", code: error?.code || "unknown" });
     }
@@ -264,7 +265,7 @@ async function getEpisodeStills(ids, title, year, episodes) {
   if (typeof kino.meta === "function" && ids && Object.keys(ids).length) {
     try {
       byIds = await kino.meta({ type: "series", ids, lang: kino.lang });
-      debugLog("kino_meta", { step: "by_ids", found: Boolean(byIds), tmdbId: byIds?.ids?.tmdb, episodeCount: byIds?.episodes?.length || 0, stillCount: episodeStillMap(byIds).size });
+      debugLog("kino_meta", { step: "by_ids", found: Boolean(byIds), tmdbId: byIds?.ids?.tmdb, episodeCount: byIds?.episodes?.length || 0, stillCount: episodeStillMap(byIds).size, uniqueImages: new Set([...episodeStillMap(byIds).values()]).size });
       const idStills = metadataStillsForSeason(byIds, year, localEpisodes);
       debugLog("kino_meta", { step: "by_ids_season", mappedStillCount: idStills.size, targetYear: year });
       for (const [key, still] of idStills) {
