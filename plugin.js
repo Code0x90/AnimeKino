@@ -106,6 +106,23 @@ async function getAniListMedia(malIds) {
   }
 }
 
+async function getEpisodeStills(ids) {
+  if (typeof kino.meta !== "function" || !ids || !Object.keys(ids).length) return new Map();
+  try {
+    const metadata = await kino.meta({ type: "series", ids, lang: kino.lang });
+    const stills = new Map();
+    for (const episode of metadata?.episodes || []) {
+      const season = Number(episode.season || 1);
+      const number = Number(episode.number);
+      if (season < 1 || number < 1 || !isPublicImage(episode.still)) continue;
+      stills.set(season + ":" + number, episode.still);
+    }
+    return stills;
+  } catch {
+    return new Map();
+  }
+}
+
 async function catalogDetail(item) {
   const existing = catalogDetailCache.get(item.ref);
   if (existing && Date.now() - existing.at < 24 * 60 * 60 * 1000) {
@@ -475,8 +492,13 @@ export async function episodes(ref) {
   if (Number.isInteger(animeImages && animeImages.anilistId) && animeImages.anilistId > 0) ids.anilist = animeImages.anilistId;
   const poster = animeImages?.poster || posterFrom(html);
   const backdrop = animeImages?.backdrop || backdropFrom(html);
+  const episodeStills = await getEpisodeStills(ids);
   const title = titleFrom(html, slug.replace(/-/g, " "));
   const synopsis = /<p\b[^>]*>([\s\S]*?)<\/p>/i.exec(html);
+  const episodesWithStills = data.episodes.map((episode) => {
+    const still = episodeStills.get(episode.season + ":" + episode.number);
+    return still ? { ...episode, still } : episode;
+  });
   return {
     series: {
       title,
@@ -488,7 +510,7 @@ export async function episodes(ref) {
       genres: data.meta.genres.length ? data.meta.genres : ["anime"],
       ids: Object.keys(ids).length ? ids : undefined,
     },
-    episodes: data.episodes,
+    episodes: episodesWithStills,
   };
 }
 
