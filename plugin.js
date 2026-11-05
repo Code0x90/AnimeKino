@@ -72,6 +72,12 @@ function isPublicImage(value) {
   return typeof value === "string" && /^https:\/\//i.test(value);
 }
 
+function debugLog(area, details = {}) {
+  try {
+    if (typeof kino.log === "function") kino.log("[AnimeAV1][" + area + "]", details);
+  } catch {}
+}
+
 async function getAniListMedia(malIds) {
   const ids = [...new Set((malIds || []).filter((id) => Number.isInteger(id) && id > 0))].slice(0, 50);
   if (!ids.length) return new Map();
@@ -118,22 +124,36 @@ function episodeStillMap(metadata) {
 }
 
 async function getKitsuEpisodeStills(malId, episodes) {
-  if (!Number.isInteger(malId) || malId < 1) return null;
+  if (!Number.isInteger(malId) || malId < 1) {
+    debugLog("kitsu", { step: "skip", reason: "mal_id_missing" });
+    return null;
+  }
   const playableEpisodes = episodes.filter((episode) => !episode.ref.endsWith("|0"));
-  if (!playableEpisodes.length) return null;
+  if (!playableEpisodes.length) {
+    debugLog("kitsu", { step: "skip", reason: "no_playable_episodes" });
+    return null;
+  }
   const headers = { Accept: "application/vnd.api+json" };
   try {
+    debugLog("kitsu", { step: "mapping_request", malId, episodeCount: playableEpisodes.length });
     const mappingUrl = "https://kitsu.io/api/edge/mappings?filter%5BexternalSite%5D=myanimelist%2Fanime&filter%5BexternalId%5D=" + malId;
     const mappingResponse = await kino.fetch(mappingUrl, { headers, timeoutMs: 8000 });
-    if (!mappingResponse.ok) return null;
+    if (!mappingResponse.ok) {
+      debugLog("kitsu", { step: "mapping_response", ok: false, status: mappingResponse.status });
+      return null;
+    }
     const mappings = mappingResponse.json()?.data || [];
     const animeIds = [...new Set(mappings
       .filter((mapping) => mapping.attributes?.externalSite === "myanimelist/anime" && String(mapping.attributes?.externalId) === String(malId))
       .map((mapping) => mapping.relationships?.item?.data)
       .filter((item) => item?.type === "anime" && /^\d+$/.test(String(item.id)))
       .map((item) => String(item.id)))];
+    debugLog("kitsu", { step: "mapping_response", ok: true, mappingCount: mappings.length, matchedAnimeIds: animeIds.length });
     // Do not guess when the cross-reference is ambiguous.
-    if (animeIds.length !== 1) return null;
+    if (animeIds.length !== 1) {
+      debugLog("kitsu", { step: "mapping_result", matchedAnimeIds: animeIds.length, fallback: true });
+      return null;
+    }
 
     const stills = new Map();
     let offset = 0;
@@ -141,22 +161,34 @@ async function getKitsuEpisodeStills(malId, episodes) {
     for (let page = 0; page < 25; page++) {
       const url = "https://kitsu.io/api/edge/anime/" + animeIds[0] + "/episodes?page%5Blimit%5D=" + pageSize + "&page%5Boffset%5D=" + offset + "&sort=number";
       const response = await kino.fetch(url, { headers, timeoutMs: 8000 });
-      if (!response.ok) break;
+      if (!response.ok) {
+        debugLog("kitsu", { step: "episodes_response", kitsuId: animeIds[0], page: page + 1, ok: false, status: response.status });
+        break;
+      }
       const body = response.json();
       const entries = body?.data || [];
+      let matchedOnPage = 0;
+      let imagesOnPage = 0;
       for (const entry of entries) {
         const number = Number(entry.attributes?.number);
         const thumbnail = entry.attributes?.thumbnail;
         const still = typeof thumbnail === "string" ? thumbnail : thumbnail?.original;
         const localEpisode = playableEpisodes.find((item) => item.number === number);
-        if (!localEpisode || !isPublicImage(still)) continue;
+        if (!localEpisode) continue;
+        matchedOnPage++;
+        if (!isPublicImage(still)) continue;
         stills.set(localEpisode.season + ":" + number, still);
+        imagesOnPage++;
       }
+      debugLog("kitsu", { step: "episodes_response", kitsuId: animeIds[0], page: page + 1, ok: true, returned: entries.length, matched: matchedOnPage, images: imagesOnPage, totalImages: stills.size });
+      if (stills.size >= playableEpisodes.length) break;
       if (entries.length < pageSize || !body?.links?.next) break;
       offset += pageSize;
     }
+    debugLog("kitsu", { step: "result", kitsuId: animeIds[0], imageCount: stills.size, expectedEpisodes: playableEpisodes.length, fallback: stills.size === 0 });
     return stills.size ? stills : null;
-  } catch {
+  } catch (error) {
+    debugLog("kitsu", { step: "error", name: error?.name || "Error", code: error?.code || "unknown" });
     return null;
   }
 }
@@ -164,21 +196,28 @@ async function getKitsuEpisodeStills(malId, episodes) {
 async function getEpisodeStills(ids, title, year) {
   let byTitle;
   let byIds;
+  debugLog("kino_meta", { step: "start", byTitleAvailable: kino.meta?.byTitle === true, hasIds: Boolean(ids && Object.keys(ids).length), year: Number(year) || undefined });
   if (typeof kino.meta === "function" && kino.meta.byTitle === true && title) {
     try {
       byTitle = await kino.meta({ type: "series", title, year: Number(year) || undefined, lang: kino.lang });
-    } catch {}
+      debugLog("kino_meta", { step: "by_title", found: Boolean(byTitle), tmdbId: byTitle?.ids?.tmdb, episodeCount: byTitle?.episodes?.length || 0, stillCount: episodeStillMap(byTitle).size });
+    } catch (error) {
+      debugLog("kino_meta", { step: "by_title_error", code: error?.code || "unknown" });
+    }
   }
   const stills = episodeStillMap(byTitle);
   if (typeof kino.meta === "function" && ids && Object.keys(ids).length) {
     try {
       byIds = await kino.meta({ type: "series", ids, lang: kino.lang });
+      debugLog("kino_meta", { step: "by_ids", found: Boolean(byIds), tmdbId: byIds?.ids?.tmdb, episodeCount: byIds?.episodes?.length || 0, stillCount: episodeStillMap(byIds).size });
       for (const [key, still] of episodeStillMap(byIds)) {
         if (!stills.has(key)) stills.set(key, still);
       }
-    } catch {}
+    } catch (error) {
+      debugLog("kino_meta", { step: "by_ids_error", code: error?.code || "unknown" });
+    }
   }
-
+  debugLog("kino_meta", { step: "result", stillCount: stills.size });
   return stills;
 }
 
@@ -545,6 +584,14 @@ export async function episodes(ref) {
   const html = await getPage("/media/" + encodeURIComponent(slug));
   const data = episodeList(html, slug);
   if (!data.episodes.length) throw kino.error("not_found", "No se encontraron episodios");
+  debugLog("episodes", {
+    step: "animeav1_response",
+    malId: data.meta.malId,
+    year: data.meta.year,
+    episodeCount: data.episodes.length,
+    firstEpisode: data.episodes[0]?.number,
+    lastEpisode: data.episodes[data.episodes.length - 1]?.number,
+  });
   const animeImages = (await getAniListMedia([data.meta.malId])).get(data.meta.malId);
   const ids = {};
   if (Number.isInteger(data.meta.malId) && data.meta.malId > 0) ids.mal = data.meta.malId;
@@ -552,8 +599,9 @@ export async function episodes(ref) {
   const poster = animeImages?.poster || posterFrom(html);
   const backdrop = animeImages?.backdrop || backdropFrom(html);
   const title = titleFrom(html, slug.replace(/-/g, " "));
-  const episodeStills = await getKitsuEpisodeStills(data.meta.malId, data.episodes)
-    || await getEpisodeStills(ids, title, data.meta.year);
+  const kitsuStills = await getKitsuEpisodeStills(data.meta.malId, data.episodes);
+  const episodeStills = kitsuStills || await getEpisodeStills(ids, title, data.meta.year);
+  debugLog("episodes", { step: "artwork_source", source: kitsuStills ? "kitsu" : "kino_meta", stillCount: episodeStills.size });
   const synopsis = /<p\b[^>]*>([\s\S]*?)<\/p>/i.exec(html);
   const episodesWithStills = data.episodes.map((episode) => {
     const still = episodeStills.get(episode.season + ":" + episode.number);
