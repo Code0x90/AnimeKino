@@ -106,21 +106,62 @@ async function getAniListMedia(malIds) {
   }
 }
 
-async function getEpisodeStills(ids) {
-  if (typeof kino.meta !== "function" || !ids || !Object.keys(ids).length) return new Map();
-  try {
-    const metadata = await kino.meta({ type: "series", ids, lang: kino.lang });
-    const stills = new Map();
-    for (const episode of metadata?.episodes || []) {
-      const season = Number(episode.season || 1);
-      const number = Number(episode.number);
-      if (season < 1 || number < 1 || !isPublicImage(episode.still)) continue;
-      stills.set(season + ":" + number, episode.still);
-    }
-    return stills;
-  } catch {
-    return new Map();
+function episodeStillMap(metadata) {
+  const stills = new Map();
+  for (const episode of metadata?.episodes || []) {
+    const season = Number(episode.season || 1);
+    const number = Number(episode.number);
+    if (season < 1 || number < 1 || !isPublicImage(episode.still)) continue;
+    stills.set(season + ":" + number, episode.still);
   }
+  return stills;
+}
+
+async function getEpisodeStills(ids, title, year, episodes) {
+  if (typeof kino.meta !== "function") return new Map();
+  let byIds;
+  let byTitle;
+  if (ids && Object.keys(ids).length) {
+    try {
+      byIds = await kino.meta({ type: "series", ids, lang: kino.lang });
+    } catch {}
+  }
+  let stills = episodeStillMap(byIds);
+  const playableEpisodes = episodes.filter((episode) => !episode.ref.endsWith("|0"));
+  const missing = () => playableEpisodes.some((episode) => !stills.has(episode.season + ":" + episode.number));
+
+  if (missing() && kino.meta.byTitle === true && title) {
+    try {
+      byTitle = await kino.meta({ type: "series", title, year: Number(year) || undefined, lang: kino.lang });
+      for (const [key, still] of episodeStillMap(byTitle)) {
+        if (!stills.has(key)) stills.set(key, still);
+      }
+    } catch {}
+  }
+
+  const tmdbId = Number(byIds?.ids?.tmdb || byTitle?.ids?.tmdb);
+  if (missing() && Number.isInteger(tmdbId) && tmdbId > 0 && typeof kino.tmdb === "function") {
+    const missingSeasons = [...new Set(playableEpisodes
+      .filter((episode) => !stills.has(episode.season + ":" + episode.number))
+      .map((episode) => episode.season))].slice(0, 4);
+    const seasonData = await Promise.all(missingSeasons.map(async (season) => {
+      try {
+        return await kino.tmdb(`/tv/${tmdbId}/season/${season}`, { language: "es-MX" });
+      } catch {
+        return null;
+      }
+    }));
+    for (const data of seasonData) {
+      for (const episode of data?.episodes || []) {
+        const season = Number(episode.season_number || data.season_number || 1);
+        const number = Number(episode.episode_number);
+        if (season < 1 || number < 1 || typeof episode.still_path !== "string" || !episode.still_path.startsWith("/")) continue;
+        const key = season + ":" + number;
+        if (!stills.has(key)) stills.set(key, "https://image.tmdb.org/t/p/w780" + episode.still_path);
+      }
+    }
+  }
+  return stills;
 }
 
 async function catalogDetail(item) {
@@ -492,8 +533,8 @@ export async function episodes(ref) {
   if (Number.isInteger(animeImages && animeImages.anilistId) && animeImages.anilistId > 0) ids.anilist = animeImages.anilistId;
   const poster = animeImages?.poster || posterFrom(html);
   const backdrop = animeImages?.backdrop || backdropFrom(html);
-  const episodeStills = await getEpisodeStills(ids);
   const title = titleFrom(html, slug.replace(/-/g, " "));
+  const episodeStills = await getEpisodeStills(ids, title, data.meta.year, data.episodes);
   const synopsis = /<p\b[^>]*>([\s\S]*?)<\/p>/i.exec(html);
   const episodesWithStills = data.episodes.map((episode) => {
     const still = episodeStills.get(episode.season + ":" + episode.number);
