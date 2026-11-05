@@ -123,7 +123,24 @@ function episodeStillMap(metadata) {
   return stills;
 }
 
-async function getKitsuEpisodeStills(malId, episodes) {
+function localizedKitsuEpisodeTitles(attributes) {
+  const titles = attributes?.titles || {};
+  const first = (values) => {
+    for (const value of values) {
+      const title = cleanText(value);
+      if (title) return title;
+    }
+    return undefined;
+  };
+  return {
+    spanish: first([titles.es_es, titles.es_mx, titles.es_la, titles.es]),
+    english: first([titles.en_us, titles.en, titles.en_jp]),
+    japanese: first([titles.ja_jp]),
+    canonical: first([attributes?.canonicalTitle]),
+  };
+}
+
+async function getKitsuEpisodeMetadata(malId, episodes) {
   if (!Number.isInteger(malId) || malId < 1) {
     debugLog("kitsu", { step: "skip", reason: "mal_id_missing" });
     return null;
@@ -164,7 +181,7 @@ async function getKitsuEpisodeStills(malId, episodes) {
       return null;
     }
 
-    const stills = new Map();
+    const episodeData = new Map();
     const uniqueImages = new Set();
     let offset = 0;
     const pageSize = 20;
@@ -179,6 +196,7 @@ async function getKitsuEpisodeStills(malId, episodes) {
       const entries = body?.data || [];
       let matchedOnPage = 0;
       let imagesOnPage = 0;
+      let titlesOnPage = 0;
       for (const entry of entries) {
         const number = Number(entry.attributes?.number);
         const thumbnail = entry.attributes?.thumbnail;
@@ -186,25 +204,34 @@ async function getKitsuEpisodeStills(malId, episodes) {
         const localEpisode = playableEpisodes.find((item) => item.number === number);
         if (!localEpisode) continue;
         matchedOnPage++;
-        if (!isPublicImage(still)) continue;
-        stills.set(localEpisode.season + ":" + number, still);
-        uniqueImages.add(still);
-        imagesOnPage++;
+        const titleFields = localizedKitsuEpisodeTitles(entry.attributes);
+        const title = titleFields.spanish || titleFields.english || titleFields.japanese || titleFields.canonical;
+        const validStill = isPublicImage(still) ? still : undefined;
+        if (title) titlesOnPage++;
+        if (validStill) {
+          uniqueImages.add(validStill);
+          imagesOnPage++;
+        }
+        if (title || validStill) {
+          episodeData.set(localEpisode.season + ":" + number, { ...titleFields, still: validStill });
+        }
       }
-      debugLog("kitsu", { step: "episodes_response", kitsuId: animeIds[0], page: page + 1, ok: true, returned: entries.length, matched: matchedOnPage, images: imagesOnPage, totalImages: stills.size, uniqueImages: uniqueImages.size });
-      if (stills.size >= playableEpisodes.length) break;
+      debugLog("kitsu", { step: "episodes_response", kitsuId: animeIds[0], page: page + 1, ok: true, returned: entries.length, matched: matchedOnPage, images: imagesOnPage, titles: titlesOnPage, totalEpisodes: episodeData.size, uniqueImages: uniqueImages.size });
+      if (episodeData.size >= playableEpisodes.length) break;
       if (entries.length < pageSize || !body?.links?.next) break;
       offset += pageSize;
     }
-    debugLog("kitsu", { step: "result", kitsuId: animeIds[0], imageCount: stills.size, uniqueImages: uniqueImages.size, expectedEpisodes: playableEpisodes.length, fallback: stills.size === 0 });
-    return stills.size ? stills : null;
+    const imageCount = [...episodeData.values()].filter((item) => item.still).length;
+    const titleCount = [...episodeData.values()].filter((item) => item.spanish || item.english || item.japanese || item.canonical).length;
+    debugLog("kitsu", { step: "result", kitsuId: animeIds[0], imageCount, titleCount, uniqueImages: uniqueImages.size, expectedEpisodes: playableEpisodes.length, fallback: episodeData.size === 0 });
+    return episodeData.size ? episodeData : null;
   } catch (error) {
     debugLog("kitsu", { step: "error", name: error?.name || "Error", code: error?.code || "unknown" });
     return null;
   }
 }
 
-function metadataStillsForSeason(metadata, year, localEpisodes) {
+function metadataEpisodesForSeason(metadata, year, localEpisodes) {
   const groups = new Map();
   for (const episode of metadata?.episodes || []) {
     const season = Number(episode.season || 1);
@@ -237,17 +264,18 @@ function metadataStillsForSeason(metadata, year, localEpisodes) {
   debugLog("kino_meta", { step: "season_choice", selectedSeason: candidates.length === 1 ? candidates[0][0] : undefined, ambiguous: candidates.length !== 1 });
   if (candidates.length !== 1) return new Map();
 
-  const stills = new Map();
+  const result = new Map();
   for (const episode of candidates[0][1]) {
     const number = Number(episode.number);
-    const still = episode.still;
+    const still = isPublicImage(episode.still) ? episode.still : undefined;
+    const title = cleanText(episode.title);
     const localEpisode = localEpisodes.find((item) => item.number === number);
-    if (localEpisode && isPublicImage(still)) stills.set(localEpisode.season + ":" + number, still);
+    if (localEpisode && (still || title)) result.set(localEpisode.season + ":" + number, { still, title: title || undefined });
   }
-  return stills;
+  return result;
 }
 
-async function getEpisodeStills(ids, title, year, episodes) {
+async function getEpisodeMetadata(ids, title, year, episodes) {
   const localEpisodes = episodes.filter((episode) => !episode.ref.endsWith("|0"));
   let byTitle;
   let byIds;
@@ -260,23 +288,24 @@ async function getEpisodeStills(ids, title, year, episodes) {
       debugLog("kino_meta", { step: "by_title_error", code: error?.code || "unknown" });
     }
   }
-  const stills = metadataStillsForSeason(byTitle, year, localEpisodes);
-  debugLog("kino_meta", { step: "by_title_season", mappedStillCount: stills.size });
+  const metadata = metadataEpisodesForSeason(byTitle, year, localEpisodes);
+  debugLog("kino_meta", { step: "by_title_season", mappedEpisodeCount: metadata.size });
   if (typeof kino.meta === "function" && ids && Object.keys(ids).length) {
     try {
       byIds = await kino.meta({ type: "series", ids, lang: kino.lang });
       debugLog("kino_meta", { step: "by_ids", found: Boolean(byIds), tmdbId: byIds?.ids?.tmdb, episodeCount: byIds?.episodes?.length || 0, stillCount: episodeStillMap(byIds).size, uniqueImages: new Set([...episodeStillMap(byIds).values()]).size });
-      const idStills = metadataStillsForSeason(byIds, year, localEpisodes);
-      debugLog("kino_meta", { step: "by_ids_season", mappedStillCount: idStills.size, targetYear: year });
-      for (const [key, still] of idStills) {
-        if (!stills.has(key)) stills.set(key, still);
+      const idMetadata = metadataEpisodesForSeason(byIds, year, localEpisodes);
+      debugLog("kino_meta", { step: "by_ids_season", mappedEpisodeCount: idMetadata.size, targetYear: year });
+      for (const [key, item] of idMetadata) {
+        const existing = metadata.get(key) || {};
+        metadata.set(key, { still: existing.still || item.still, title: existing.title || item.title });
       }
     } catch (error) {
       debugLog("kino_meta", { step: "by_ids_error", code: error?.code || "unknown" });
     }
   }
-  debugLog("kino_meta", { step: "result", stillCount: stills.size });
-  return stills;
+  debugLog("kino_meta", { step: "result", episodeCount: metadata.size, stillCount: [...metadata.values()].filter((item) => item.still).length, titleCount: [...metadata.values()].filter((item) => item.title).length });
+  return metadata;
 }
 
 async function catalogDetail(item) {
@@ -657,13 +686,41 @@ export async function episodes(ref) {
   const poster = animeImages?.poster || posterFrom(html);
   const backdrop = animeImages?.backdrop || backdropFrom(html);
   const title = titleFrom(html, slug.replace(/-/g, " "));
-  const kitsuStills = await getKitsuEpisodeStills(data.meta.malId, data.episodes);
-  const episodeStills = kitsuStills || await getEpisodeStills(ids, title, data.meta.year, data.episodes);
-  debugLog("episodes", { step: "artwork_source", source: kitsuStills ? "kitsu" : "kino_meta", stillCount: episodeStills.size });
+  const kitsuEpisodes = await getKitsuEpisodeMetadata(data.meta.malId, data.episodes);
+  const needsKinoMetadata = data.episodes.some((episode) => {
+    if (episode.ref.endsWith("|0")) return false;
+    const item = kitsuEpisodes?.get(episode.season + ":" + episode.number);
+    return !item?.still || !(item?.spanish || item?.english || item?.japanese || item?.canonical);
+  });
+  const kinoEpisodes = needsKinoMetadata
+    ? await getEpisodeMetadata(ids, title, data.meta.year, data.episodes)
+    : new Map();
+  const languageIsSpanish = String(kino.lang || "").toLowerCase().startsWith("es");
+  debugLog("episodes", {
+    step: "episode_metadata_source",
+    source: kitsuEpisodes?.size ? (kinoEpisodes.size ? "kitsu+kino_meta" : "kitsu") : "kino_meta",
+    kitsuEpisodes: kitsuEpisodes?.size || 0,
+    kinoEpisodes: kinoEpisodes.size,
+    titleCount: data.episodes.filter((episode) => {
+      const key = episode.season + ":" + episode.number;
+      const kitsu = kitsuEpisodes?.get(key);
+      return Boolean(kitsu?.spanish || kitsu?.english || kitsu?.japanese || kitsu?.canonical || kinoEpisodes.get(key)?.title);
+    }).length,
+  });
   const synopsis = /<p\b[^>]*>([\s\S]*?)<\/p>/i.exec(html);
-  const episodesWithStills = data.episodes.map((episode) => {
-    const still = episodeStills.get(episode.season + ":" + episode.number);
-    return still ? { ...episode, still } : episode;
+  const episodesWithMetadata = data.episodes.map((episode) => {
+    const key = episode.season + ":" + episode.number;
+    const kitsu = kitsuEpisodes?.get(key);
+    const meta = kinoEpisodes.get(key);
+    const episodeTitle = kitsu?.spanish
+      || (languageIsSpanish ? meta?.title : undefined)
+      || kitsu?.english
+      || (!languageIsSpanish ? meta?.title : undefined)
+      || kitsu?.japanese
+      || kitsu?.canonical;
+    const still = kitsu?.still || meta?.still;
+    if (!episodeTitle && !still) return episode;
+    return { ...episode, ...(episodeTitle ? { title: episodeTitle } : {}), ...(still ? { still } : {}) };
   });
   return {
     series: {
@@ -676,7 +733,7 @@ export async function episodes(ref) {
       genres: data.meta.genres.length ? data.meta.genres : ["anime"],
       ids: Object.keys(ids).length ? ids : undefined,
     },
-    episodes: episodesWithStills,
+    episodes: episodesWithMetadata,
   };
 }
 
